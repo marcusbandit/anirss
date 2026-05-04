@@ -32,6 +32,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import NoReturn
 
 # -------- ANSI --------
 C_RED, C_GRN, C_YEL, C_CYN, C_DIM, C_BLD, C_OFF = (
@@ -72,11 +73,11 @@ DEFAULT_CONFIG = tomllib.loads(DEFAULT_CONFIG_TOML)
 
 
 def _deep_merge(dst: dict, src: dict) -> dict:
-    for k, v in src.items():
-        if isinstance(v, dict) and isinstance(dst.get(k), dict):
-            _deep_merge(dst[k], v)
+    for key, value in src.items():
+        if isinstance(value, dict) and isinstance(dst.get(key), dict):
+            _deep_merge(dst[key], value)
         else:
-            dst[k] = v
+            dst[key] = value
     return dst
 
 
@@ -130,7 +131,7 @@ def log(level: str, msg: str) -> None:
         pass
 
 
-def die(msg: str) -> None:
+def die(msg: str) -> NoReturn:
     log("ERROR", msg)
     print(f"{C_RED}error:{C_OFF} {msg}", file=sys.stderr)
     if CFG:
@@ -162,11 +163,11 @@ def fetch_items(query: str) -> list[tuple[str, str]]:
         die(f"can't reach nyaa: {e}")
     root = ET.fromstring(data)
     out = []
-    for item in root.iter("item"):
-        t = item.find("title")
-        l = item.find("link")
-        if t is not None and t.text and l is not None and l.text:
-            out.append((t.text.strip(), l.text.strip()))
+    for entry in root.iter("item"):
+        title = entry.find("title")
+        link = entry.find("link")
+        if title is not None and title.text and link is not None and link.text:
+            out.append((title.text.strip(), link.text.strip()))
     log("INFO", f"  -> {len(out)} items")
     return out
 
@@ -182,25 +183,25 @@ RES_RE     = re.compile(r"\b(\d{3,4})p\b", re.IGNORECASE)
 
 
 def poster_of(title: str) -> str | None:
-    m = POSTER_RE.match(title)
-    return f"[{m.group(1)}]" if m else None
+    match = POSTER_RE.match(title)
+    return f"[{match.group(1)}]" if match else None
 
 
 def title_tokens(title: str) -> list[str]:
     base = EXT_RE.sub("", title)
     base = POSTER_RE.sub("", base, count=1)
-    out: list[str] = []
-    for tok in TOKEN_RE.split(base):
-        if not tok or tok == "-":
+    tokens: list[str] = []
+    for token in TOKEN_RE.split(base):
+        if not token or token == "-":
             continue
-        if NUMERIC_RE.match(tok):
+        if NUMERIC_RE.match(token):
             continue
-        if HEX_RE.match(tok) and not re.search(r"[g-zG-Z]", tok):
+        if HEX_RE.match(token) and not re.search(r"[g-zG-Z]", token):
             continue
-        if len(tok) < 2:
+        if len(token) < 2:
             continue
-        out.append(tok)
-    return out
+        tokens.append(token)
+    return tokens
 
 
 # -------- TUI picker --------
@@ -233,15 +234,121 @@ def fzf_pick_one(options: list[str], header: str) -> str | None:
 
 DONE = "[done — finalize this query]"
 
+# (title, link)
+Item = tuple[str, str]
+# (label, tokens, member_count, has_poster_token)
+Group = tuple[str, list[str], int, bool]
+
 
 def show_titles(titles: list[str], cap: int = 15) -> None:
-    for t in titles[:cap]:
-        print(f"  {C_DIM}·{C_OFF} {t}")
+    for title in titles[:cap]:
+        print(f"  {C_DIM}·{C_OFF} {title}")
     if len(titles) > cap:
         print(f"  {C_DIM}... and {len(titles) - cap} more{C_OFF}")
 
 
-def refine(initial_query: str) -> tuple[str, list[tuple[str, str]]]:
+def auto_resolution(query: str, items: list[Item]) -> tuple[str, list[Item]]:
+    """If query lacks a <n>p token and every item has one, append the highest."""
+    if RES_RE.search(query):
+        return query, items
+    per_max = [
+        max((int(match.group(1)) for match in RES_RE.finditer(title)), default=None)
+        for title, _ in items
+    ]
+    missing = sum(1 for res in per_max if res is None)
+    if missing:
+        print(
+            f"{C_DIM}[skipping auto-resolution: {missing}/{len(items)} "
+            f"title(s) lack a <n>p token]{C_OFF}"
+        )
+        log("INFO", f"skip auto-resolution: {missing} titles lack one")
+        return query, items
+    highest = max(res for res in per_max if res is not None)
+    token = f"{highest}p"
+    print(f"{C_YEL}[auto-appending highest available resolution: {token}]{C_OFF}")
+    log("INFO", f"auto-append {token} (max across {len(items)} titles)")
+    new_items = [item for item, res in zip(items, per_max) if res == highest]
+    return f"{query} {token}", new_items
+
+
+def _members_of(selected: list[Item], token: str) -> frozenset[int]:
+    return frozenset(
+        i for i, (title, _) in enumerate(selected)
+        if (token.startswith("[") and poster_of(title) == token)
+        or (not token.startswith("[") and token in title_tokens(title))
+    )
+
+
+def compute_groups(selected: list[Item]) -> list[Group]:
+    """Find tokens that partition `selected` into refinable subsets, grouped by membership."""
+    total = len(selected)
+    counts: Counter[str] = Counter()
+    for title, _ in selected:
+        seen: set[str] = set()
+        poster = poster_of(title)
+        if poster:
+            seen.add(poster)
+        for token in title_tokens(title):
+            seen.add(token)
+        for token in seen:
+            counts[token] += 1
+
+    refinable = [token for token, count in counts.items() if 1 < count < total]
+
+    by_members: dict[frozenset[int], list[str]] = defaultdict(list)
+    for token in refinable:
+        by_members[_members_of(selected, token)].append(token)
+
+    groups: list[Group] = []
+    for members, tokens in by_members.items():
+        tokens_sorted = sorted(tokens, key=lambda x: (not x.startswith("["), -len(x), x))
+        label = "+".join(tokens_sorted)
+        has_poster = any(token.startswith("[") for token in tokens)
+        groups.append((label, tokens_sorted, len(members), has_poster))
+
+    groups.sort(key=lambda group: (not group[3], -group[2], group[0]))
+    return groups
+
+
+def pick_group(groups: list[Group], n_results: int) -> list[str] | None:
+    """Show the picker. Return chosen tokens, or None to finalize."""
+    options = [f"{label:<28} ({count})" for label, _, count, _ in groups] + [DONE]
+    choice = fzf_pick_one(
+        options,
+        f"{n_results} results — pick a token to filter, or {DONE} / esc to finalize",
+    )
+    if choice is None or choice == DONE:
+        return None
+    chosen_label = choice.rsplit(" (", 1)[0].rstrip()
+    chosen = next((group for group in groups if group[0] == chosen_label), None)
+    if chosen is None:
+        return None
+    log("INFO", f"picked {chosen_label!r} -> tokens {chosen[1]}")
+    return chosen[1]
+
+
+def apply_pick(
+    selected: list[Item], query: str, tokens: list[str]
+) -> tuple[list[Item], str] | None:
+    """Filter `selected` and extend `query` with `tokens`. Return None if filter yields 0."""
+    new_selected = list(selected)
+    for token in tokens:
+        if token.startswith("["):
+            new_selected = [item for item in new_selected if poster_of(item[0]) == token]
+        else:
+            new_selected = [item for item in new_selected if token in title_tokens(item[0])]
+    if not new_selected:
+        return None
+    new_query = query
+    for token in tokens:
+        if token.startswith("[") and not new_query.lstrip().startswith("["):
+            new_query = f"{token} {new_query}"
+        elif not token.startswith("["):
+            new_query = f"{new_query} {token}"
+    return new_selected, new_query
+
+
+def refine(initial_query: str) -> tuple[str, list[Item]]:
     """Return (final_query, list of (title, link)) after interactive refinement."""
     query = initial_query.strip()
     log("INFO", f"refine start: {query!r}")
@@ -252,109 +359,33 @@ def refine(initial_query: str) -> tuple[str, list[tuple[str, str]]]:
     if not items:
         die("no results for that query")
 
-    # Auto-pick highest <n>p iff the user didn't specify a resolution AND
-    # every result has a <n>p token.
-    if not RES_RE.search(query):
-        per_max = [
-            max((int(m.group(1)) for m in RES_RE.finditer(t)), default=None)
-            for t, _ in items
-        ]
-        missing = sum(1 for r in per_max if r is None)
-        if missing == 0:
-            highest = max(per_max)  # type: ignore[arg-type]
-            tok = f"{highest}p"
-            print(f"{C_YEL}[auto-appending highest available resolution: {tok}]{C_OFF}")
-            log("INFO", f"auto-append {tok} (max across {len(items)} titles)")
-            query = f"{query} {tok}"
-            items = [it for it, r in zip(items, per_max) if r == highest]
-        else:
-            print(
-                f"{C_DIM}[skipping auto-resolution: {missing}/{len(items)} "
-                f"title(s) lack a <n>p token]{C_OFF}"
-            )
-            log("INFO", f"skip auto-resolution: {missing} titles lack one")
-
-    selected = list(items)
+    query, selected = auto_resolution(query, items)
 
     while True:
-        n = len(selected)
+        count = len(selected)
         print()
         print(f"{C_BLD}Query:{C_OFF} {query}")
-        print(f"{C_BLD}{n} result(s):{C_OFF}")
-        show_titles([t for t, _ in selected])
+        print(f"{C_BLD}{count} result(s):{C_OFF}")
+        show_titles([title for title, _ in selected])
 
-        if n <= 1:
+        if count <= 1:
             break
 
-        counts: Counter[str] = Counter()
-        for t, _ in selected:
-            seen = set()
-            p = poster_of(t)
-            if p:
-                seen.add(p)
-            for tok in title_tokens(t):
-                seen.add(tok)
-            for s in seen:
-                counts[s] += 1
-
-        refinable = [t for t, c in counts.items() if 1 < c < n]
-
-        def members_of(tok: str) -> frozenset[int]:
-            return frozenset(
-                i for i, (t, _) in enumerate(selected)
-                if (tok.startswith("[") and poster_of(t) == tok)
-                or (not tok.startswith("[") and tok in title_tokens(t))
-            )
-
-        groups: dict[frozenset[int], list[str]] = defaultdict(list)
-        for tok in refinable:
-            groups[members_of(tok)].append(tok)
-
-        group_list = []
-        for members, toks in groups.items():
-            toks_sorted = sorted(toks, key=lambda x: (not x.startswith("["), -len(x), x))
-            label = "+".join(toks_sorted)
-            has_poster = any(t.startswith("[") for t in toks)
-            group_list.append((label, toks_sorted, len(members), has_poster))
-
-        group_list.sort(key=lambda g: (not g[3], -g[2], g[0]))
-
-        if not group_list:
+        groups = compute_groups(selected)
+        if not groups:
             print(f"{C_DIM}(no further refinements available){C_OFF}")
             break
 
-        opts = [f"{label:<28} ({cnt})" for label, _, cnt, _ in group_list] + [DONE]
-        choice = fzf_pick_one(
-            opts,
-            f"{n} results — pick a token to filter, or {DONE} / esc to finalize",
-        )
-        if choice is None or choice == DONE:
+        tokens = pick_group(groups, count)
+        if tokens is None:
             break
 
-        chosen_label = choice.rsplit(" (", 1)[0].rstrip()
-        chosen_group = next((g for g in group_list if g[0] == chosen_label), None)
-        if chosen_group is None:
-            continue
-        chosen_toks = chosen_group[1]
-        log("INFO", f"picked {chosen_label!r} -> tokens {chosen_toks}")
-
-        new_selected = list(selected)
-        for tok in chosen_toks:
-            if tok.startswith("["):
-                new_selected = [it for it in new_selected if poster_of(it[0]) == tok]
-            else:
-                new_selected = [it for it in new_selected if tok in title_tokens(it[0])]
-        if not new_selected:
+        result = apply_pick(selected, query, tokens)
+        if result is None:
             print(f"{C_YEL}filter would yield 0 results — skipped{C_OFF}")
-            log("WARN", f"group {chosen_label!r} would yield 0 — skipped")
+            log("WARN", f"tokens {tokens!r} would yield 0 — skipped")
             continue
-        selected = new_selected
-
-        for tok in chosen_toks:
-            if tok.startswith("[") and not query.lstrip().startswith("["):
-                query = f"{tok} {query}"
-            elif not tok.startswith("["):
-                query = f"{query} {tok}"
+        selected, query = result
         log("INFO", f"after pick: {len(selected)} results, query={query!r}")
 
     print()
@@ -367,8 +398,8 @@ def refine(initial_query: str) -> tuple[str, list[tuple[str, str]]]:
 def qbt_login(password: str) -> tuple[object | None, str | None]:
     base = CFG["qbittorrent"]["url"]
     user = CFG["qbittorrent"]["username"]
-    cj = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
     opener.addheaders = [("Referer", base)]
     data = urllib.parse.urlencode({"username": user, "password": password}).encode()
     req = urllib.request.Request(f"{base}/api/v2/auth/login", data=data)
@@ -454,13 +485,13 @@ def pick_action(n_items: int) -> str:
 
 
 def pick_movie(items: list[tuple[str, str]]) -> tuple[str, str] | None:
-    titles = [t for t, _ in items]
+    titles = [title for title, _ in items]
     pick = fzf_pick_one(titles, f"pick one of {len(items)} item(s) to save as a movie")
     if pick is None:
         return None
-    for t, link in items:
-        if t == pick:
-            return (t, link)
+    for title, link in items:
+        if title == pick:
+            return (title, link)
     return None
 
 
