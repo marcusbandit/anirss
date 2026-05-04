@@ -42,30 +42,6 @@ C_RED, C_GRN, C_YEL, C_CYN, C_DIM, C_BLD, C_OFF = (
 # -------- config --------
 CONFIG_PATH = Path("~/.config/anirss/config.toml").expanduser()
 
-DEFAULT_CONFIG = {
-    "qbittorrent": {
-        "url": "http://localhost:8080",
-        "username": "admin",
-        "login_retries": 3,
-    },
-    "downloads": {
-        # Subscriptions and bulk downloads create a per-name subdir under this.
-        "save_base": "~/Downloads/Anime",
-        # Single-file movie downloads land directly here (no per-name subdir).
-        "movie_path": "~/Downloads/Movies",
-    },
-    "search": {
-        "nyaa_url": "https://nyaa.si/",
-        # nyaa category id (e.g. "1_0" = Anime, "1_2" = Anime English-translated)
-        "category": "1_0",
-        # nyaa filter: "0" = no filter, "1" = no remakes, "2" = trusted only
-        "filter": "2",
-    },
-    "logging": {
-        "log_path": "~/.local/state/anirss/anirss.log",
-    },
-}
-
 DEFAULT_CONFIG_TOML = """\
 # anirss configuration
 
@@ -91,6 +67,8 @@ filter = "2"
 [logging]
 log_path = "~/.local/state/anirss/anirss.log"
 """
+
+DEFAULT_CONFIG = tomllib.loads(DEFAULT_CONFIG_TOML)
 
 
 def _deep_merge(dst: dict, src: dict) -> dict:
@@ -466,22 +444,14 @@ def is_one_shot_url(s: str) -> bool:
 
 
 def pick_action(n_items: int) -> str:
-    options = [
-        f"subscribe to this query as a recurring feed",
-        f"download {n_items} matching item(s) now",
-        f"download as movie (pick one from the list)",
-        "cancel",
+    table = [
+        ("subscribe to this query as a recurring feed", ACT_SUB),
+        (f"download {n_items} matching item(s) now",    ACT_DL),
+        ("download as movie (pick one from the list)",  ACT_MOVIE),
+        ("cancel",                                      ACT_CANCEL),
     ]
-    choice = fzf_pick_one(options, "action?")
-    if choice is None:
-        return ACT_CANCEL
-    if choice.startswith("subscribe"):
-        return ACT_SUB
-    if choice.startswith("download as movie"):
-        return ACT_MOVIE
-    if choice.startswith("download"):
-        return ACT_DL
-    return ACT_CANCEL
+    choice = fzf_pick_one([label for label, _ in table], "action?")
+    return next((act for label, act in table if label == choice), ACT_CANCEL)
 
 
 def pick_movie(items: list[tuple[str, str]]) -> tuple[str, str] | None:
