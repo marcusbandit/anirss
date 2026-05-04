@@ -32,7 +32,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import NoReturn
+from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
+
 
 # -------- ANSI --------
 C_RED, C_GRN, C_YEL, C_CYN, C_DIM, C_BLD, C_OFF = (
@@ -42,6 +43,35 @@ C_RED, C_GRN, C_YEL, C_CYN, C_DIM, C_BLD, C_OFF = (
 
 # -------- config --------
 CONFIG_PATH = Path("~/.config/anirss/config.toml").expanduser()
+
+
+class QbtConfig(TypedDict):
+    url: str
+    username: str
+    login_retries: int
+
+
+class DownloadsConfig(TypedDict):
+    save_base: str
+    movie_path: str
+
+
+class SearchConfig(TypedDict):
+    nyaa_url: str
+    category: str
+    filter: str
+
+
+class LoggingConfig(TypedDict):
+    log_path: str
+
+
+class AnirssConfig(TypedDict):
+    qbittorrent: QbtConfig
+    downloads: DownloadsConfig
+    search: SearchConfig
+    logging: LoggingConfig
+
 
 DEFAULT_CONFIG_TOML = """\
 # anirss configuration
@@ -69,10 +99,10 @@ filter = "2"
 log_path = "~/.local/state/anirss/anirss.log"
 """
 
-DEFAULT_CONFIG = tomllib.loads(DEFAULT_CONFIG_TOML)
+DEFAULT_CONFIG: AnirssConfig = cast(AnirssConfig, tomllib.loads(DEFAULT_CONFIG_TOML))
 
 
-def _deep_merge(dst: dict, src: dict) -> dict:
+def _deep_merge(dst, src):  # type-erased; works on plain dicts and TypedDicts
     for key, value in src.items():
         if isinstance(value, dict) and isinstance(dst.get(key), dict):
             _deep_merge(dst[key], value)
@@ -81,7 +111,7 @@ def _deep_merge(dst: dict, src: dict) -> dict:
     return dst
 
 
-def load_config() -> dict:
+def load_config() -> AnirssConfig:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     if CONFIG_PATH.exists():
         try:
@@ -103,20 +133,16 @@ def load_config() -> dict:
     return cfg
 
 
-CFG: dict = {}  # populated in main()
-
-
 # -------- logging --------
 
-_LOG_FILE = None
+_LOG_FILE: TextIO | None = None
 
 
-def _init_log() -> None:
+def init_log(log_path: str) -> None:
     global _LOG_FILE
-    path = CFG["logging"]["log_path"]
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        _LOG_FILE = open(path, "a", buffering=1)  # line-buffered
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        _LOG_FILE = open(log_path, "a", buffering=1)  # line-buffered
     except OSError:
         _LOG_FILE = None
 
@@ -134,26 +160,40 @@ def log(level: str, msg: str) -> None:
 def die(msg: str) -> NoReturn:
     log("ERROR", msg)
     print(f"{C_RED}error:{C_OFF} {msg}", file=sys.stderr)
-    if CFG:
-        print(f"{C_DIM}log: {CFG['logging']['log_path']}{C_OFF}", file=sys.stderr)
+    if _LOG_FILE is not None:
+        print(f"{C_DIM}log: {_LOG_FILE.name}{C_OFF}", file=sys.stderr)
     sys.exit(1)
+
+
+# -------- shared types --------
+
+class Item(NamedTuple):
+    title: str
+    link: str
+
+
+class Group(NamedTuple):
+    label: str
+    tokens: list[str]
+    member_count: int
+    has_poster: bool
 
 
 # -------- nyaa --------
 
-def search_url(query: str) -> str:
+def search_url(query: str, search: SearchConfig) -> str:
     qs = urllib.parse.urlencode({
         "page": "rss",
         "q": query,
-        "c": CFG["search"]["category"],
-        "f": CFG["search"]["filter"],
+        "c": search["category"],
+        "f": search["filter"],
     })
-    return f"{CFG['search']['nyaa_url']}?{qs}"
+    return f"{search['nyaa_url']}?{qs}"
 
 
-def fetch_items(query: str) -> list[tuple[str, str]]:
-    """Return list of (title, link) pairs from the nyaa RSS for `query`."""
-    url = search_url(query)
+def fetch_items(query: str, search: SearchConfig) -> list[Item]:
+    """Return list of Items from the nyaa RSS for `query`."""
+    url = search_url(query, search)
     log("INFO", f"GET {url}")
     req = urllib.request.Request(url, headers={"User-Agent": "anirss/1.0"})
     try:
@@ -162,29 +202,48 @@ def fetch_items(query: str) -> list[tuple[str, str]]:
     except urllib.error.URLError as e:
         die(f"can't reach nyaa: {e}")
     root = ET.fromstring(data)
-    out = []
+    out: list[Item] = []
     for entry in root.iter("item"):
         title = entry.find("title")
         link = entry.find("link")
         if title is not None and title.text and link is not None and link.text:
-            out.append((title.text.strip(), link.text.strip()))
+            out.append(Item(title.text.strip(), link.text.strip()))
     log("INFO", f"  -> {len(out)} items")
     return out
 
 
 # -------- title parsing --------
 
-POSTER_RE  = re.compile(r"^\[([^\]]+)\]")
-TOKEN_RE   = re.compile(r"[\s\[\]\(\)]+")
-NUMERIC_RE = re.compile(r"^\d+$")
-HEX_RE     = re.compile(r"^[0-9A-Fa-f]{6,}$")
-EXT_RE     = re.compile(r"\.\w{2,4}$")
-RES_RE     = re.compile(r"\b(\d{3,4})p\b", re.IGNORECASE)
+POSTER_RE   = re.compile(r"^\[([^\]]+)\]")
+TOKEN_RE    = re.compile(r"[\s\[\]\(\)]+")
+NUMERIC_RE  = re.compile(r"^\d+$")
+HEX_RE      = re.compile(r"^[0-9A-Fa-f]{6,}$")
+EXT_RE      = re.compile(r"\.\w{2,4}$")
+RES_RE      = re.compile(r"\b(\d{3,4})p\b", re.IGNORECASE)
+# " - 04" or " - 04v2" followed by space, end, or bracket; not " - 1080p".
+EPISODE_RE  = re.compile(r"\s+-\s+\d{1,4}(?:v\d+)?(?=\s|$|\[)")
+META_RE     = re.compile(r"\s*\[")
 
 
 def poster_of(title: str) -> str | None:
     match = POSTER_RE.match(title)
     return f"[{match.group(1)}]" if match else None
+
+
+def show_name(title: str) -> str:
+    """Best-effort show name from a torrent title: strip poster, episode, metadata, extension."""
+    name = EXT_RE.sub("", title)
+    name = POSTER_RE.sub("", name, count=1).strip()
+    cuts: list[int] = []
+    episode = EPISODE_RE.search(name)
+    if episode:
+        cuts.append(episode.start())
+    meta = META_RE.search(name)
+    if meta and meta.start() > 0:
+        cuts.append(meta.start())
+    if cuts:
+        name = name[:min(cuts)]
+    return name.strip(" -")
 
 
 def title_tokens(title: str) -> list[str]:
@@ -234,11 +293,6 @@ def fzf_pick_one(options: list[str], header: str) -> str | None:
 
 DONE = "[done — finalize this query]"
 
-# (title, link)
-Item = tuple[str, str]
-# (label, tokens, member_count, has_poster_token)
-Group = tuple[str, list[str], int, bool]
-
 
 def show_titles(titles: list[str], cap: int = 15) -> None:
     for title in titles[:cap]:
@@ -252,8 +306,8 @@ def auto_resolution(query: str, items: list[Item]) -> tuple[str, list[Item]]:
     if RES_RE.search(query):
         return query, items
     per_max = [
-        max((int(match.group(1)) for match in RES_RE.finditer(title)), default=None)
-        for title, _ in items
+        max((int(match.group(1)) for match in RES_RE.finditer(item.title)), default=None)
+        for item in items
     ]
     missing = sum(1 for res in per_max if res is None)
     if missing:
@@ -273,9 +327,9 @@ def auto_resolution(query: str, items: list[Item]) -> tuple[str, list[Item]]:
 
 def _members_of(selected: list[Item], token: str) -> frozenset[int]:
     return frozenset(
-        i for i, (title, _) in enumerate(selected)
-        if (token.startswith("[") and poster_of(title) == token)
-        or (not token.startswith("[") and token in title_tokens(title))
+        i for i, item in enumerate(selected)
+        if (token.startswith("[") and poster_of(item.title) == token)
+        or (not token.startswith("[") and token in title_tokens(item.title))
     )
 
 
@@ -283,12 +337,12 @@ def compute_groups(selected: list[Item]) -> list[Group]:
     """Find tokens that partition `selected` into refinable subsets, grouped by membership."""
     total = len(selected)
     counts: Counter[str] = Counter()
-    for title, _ in selected:
+    for item in selected:
         seen: set[str] = set()
-        poster = poster_of(title)
+        poster = poster_of(item.title)
         if poster:
             seen.add(poster)
-        for token in title_tokens(title):
+        for token in title_tokens(item.title):
             seen.add(token)
         for token in seen:
             counts[token] += 1
@@ -304,15 +358,15 @@ def compute_groups(selected: list[Item]) -> list[Group]:
         tokens_sorted = sorted(tokens, key=lambda x: (not x.startswith("["), -len(x), x))
         label = "+".join(tokens_sorted)
         has_poster = any(token.startswith("[") for token in tokens)
-        groups.append((label, tokens_sorted, len(members), has_poster))
+        groups.append(Group(label, tokens_sorted, len(members), has_poster))
 
-    groups.sort(key=lambda group: (not group[3], -group[2], group[0]))
+    groups.sort(key=lambda g: (not g.has_poster, -g.member_count, g.label))
     return groups
 
 
 def pick_group(groups: list[Group], n_results: int) -> list[str] | None:
     """Show the picker. Return chosen tokens, or None to finalize."""
-    options = [f"{label:<28} ({count})" for label, _, count, _ in groups] + [DONE]
+    options = [f"{g.label:<28} ({g.member_count})" for g in groups] + [DONE]
     choice = fzf_pick_one(
         options,
         f"{n_results} results — pick a token to filter, or {DONE} / esc to finalize",
@@ -320,11 +374,11 @@ def pick_group(groups: list[Group], n_results: int) -> list[str] | None:
     if choice is None or choice == DONE:
         return None
     chosen_label = choice.rsplit(" (", 1)[0].rstrip()
-    chosen = next((group for group in groups if group[0] == chosen_label), None)
+    chosen = next((g for g in groups if g.label == chosen_label), None)
     if chosen is None:
         return None
-    log("INFO", f"picked {chosen_label!r} -> tokens {chosen[1]}")
-    return chosen[1]
+    log("INFO", f"picked {chosen_label!r} -> tokens {chosen.tokens}")
+    return chosen.tokens
 
 
 def apply_pick(
@@ -334,9 +388,9 @@ def apply_pick(
     new_selected = list(selected)
     for token in tokens:
         if token.startswith("["):
-            new_selected = [item for item in new_selected if poster_of(item[0]) == token]
+            new_selected = [item for item in new_selected if poster_of(item.title) == token]
         else:
-            new_selected = [item for item in new_selected if token in title_tokens(item[0])]
+            new_selected = [item for item in new_selected if token in title_tokens(item.title)]
     if not new_selected:
         return None
     new_query = query
@@ -348,14 +402,14 @@ def apply_pick(
     return new_selected, new_query
 
 
-def refine(initial_query: str) -> tuple[str, list[Item]]:
-    """Return (final_query, list of (title, link)) after interactive refinement."""
+def refine(initial_query: str, search: SearchConfig) -> tuple[str, list[Item]]:
+    """Return (final_query, list of Items) after interactive refinement."""
     query = initial_query.strip()
     log("INFO", f"refine start: {query!r}")
 
     print(f"{C_BLD}Query:{C_OFF} {query}")
     print(f"{C_DIM}fetching nyaa.si...{C_OFF}")
-    items = fetch_items(query)
+    items = fetch_items(query, search)
     if not items:
         die("no results for that query")
 
@@ -366,7 +420,7 @@ def refine(initial_query: str) -> tuple[str, list[Item]]:
         print()
         print(f"{C_BLD}Query:{C_OFF} {query}")
         print(f"{C_BLD}{count} result(s):{C_OFF}")
-        show_titles([title for title, _ in selected])
+        show_titles([item.title for item in selected])
 
         if count <= 1:
             break
@@ -395,44 +449,50 @@ def refine(initial_query: str) -> tuple[str, list[Item]]:
 
 # -------- qBittorrent --------
 
-def qbt_login(password: str) -> tuple[object | None, str | None]:
-    base = CFG["qbittorrent"]["url"]
-    user = CFG["qbittorrent"]["username"]
+class QbtSession:
+    """Authenticated qBittorrent WebUI session."""
+
+    def __init__(self, opener: urllib.request.OpenerDirector, base_url: str):
+        self.opener = opener
+        self.base_url = base_url
+
+    def post(self, endpoint: str, **fields) -> str:
+        log("INFO", f"POST {endpoint} {fields}")
+        data = urllib.parse.urlencode(fields).encode()
+        req = urllib.request.Request(f"{self.base_url}{endpoint}", data=data)
+        try:
+            with self.opener.open(req, timeout=15) as resp:
+                body = resp.read().decode()
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace") if e.fp else ""
+            log("ERROR", f"  -> HTTP {e.code}: {body or e.reason}")
+            die(f"qBittorrent {endpoint} -> HTTP {e.code}: {body or e.reason}")
+        log("INFO", f"  -> {body[:200]!r}{'...' if len(body) > 200 else ''}")
+        return body
+
+
+def qbt_login(base_url: str, username: str, password: str) -> tuple[QbtSession | None, str | None]:
     jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
-    opener.addheaders = [("Referer", base)]
-    data = urllib.parse.urlencode({"username": user, "password": password}).encode()
-    req = urllib.request.Request(f"{base}/api/v2/auth/login", data=data)
-    log("INFO", f"POST /api/v2/auth/login user={user}")
+    opener.addheaders = [("Referer", base_url)]
+    data = urllib.parse.urlencode({"username": username, "password": password}).encode()
+    req = urllib.request.Request(f"{base_url}/api/v2/auth/login", data=data)
+    log("INFO", f"POST /api/v2/auth/login user={username}")
     try:
         with opener.open(req, timeout=10) as resp:
             body = resp.read().decode().strip()
     except urllib.error.URLError as e:
-        return None, f"can't reach qBittorrent at {base}: {e}"
+        return None, f"can't reach qBittorrent at {base_url}: {e}"
     log("INFO", f"  -> {body}")
     if body != "Ok.":
         return None, f"login: qBittorrent returned {body!r}"
-    return opener, None
+    return QbtSession(opener, base_url), None
 
 
-def qbt_post(opener, endpoint: str, **fields) -> str:
-    base = CFG["qbittorrent"]["url"]
-    log("INFO", f"POST {endpoint} {fields}")
-    data = urllib.parse.urlencode(fields).encode()
-    req = urllib.request.Request(f"{base}{endpoint}", data=data)
-    try:
-        with opener.open(req, timeout=15) as resp:
-            body = resp.read().decode()
-    except urllib.error.HTTPError as e:
-        body = e.read().decode(errors="replace") if e.fp else ""
-        log("ERROR", f"  -> HTTP {e.code}: {body or e.reason}")
-        die(f"qBittorrent {endpoint} -> HTTP {e.code}: {body or e.reason}")
-    log("INFO", f"  -> {body[:200]!r}{'...' if len(body) > 200 else ''}")
-    return body
-
-
-def login_with_retry():
-    retries = int(CFG["qbittorrent"]["login_retries"])
+def login_with_retry(qbt_cfg: QbtConfig) -> QbtSession:
+    base_url = qbt_cfg["url"]
+    username = qbt_cfg["username"]
+    retries = int(qbt_cfg["login_retries"])
     for attempt in range(1, retries + 1):
         try:
             password = getpass.getpass(f"qBittorrent password ({attempt}/{retries}): ")
@@ -441,22 +501,22 @@ def login_with_retry():
         if not password:
             print(f"{C_YEL}empty — try again{C_OFF}")
             continue
-        opener, err = qbt_login(password)
-        if opener is not None:
-            return opener
+        qbt, err = qbt_login(base_url, username, password)
+        if qbt is not None:
+            return qbt
         print(f"{C_RED}{err}{C_OFF}")
     die(f"login failed after {retries} attempts")
 
 
-def apply_no_seed() -> None:
+def apply_no_seed(qbt_cfg: QbtConfig) -> None:
     print(f"{C_BLD}Applying global no-seed:{C_OFF} max_ratio=0, action=pause")
-    opener = login_with_retry()
+    qbt = login_with_retry(qbt_cfg)
     prefs = {
         "max_ratio_enabled": True,
         "max_ratio": 0.0,
         "max_ratio_act": 0,
     }
-    qbt_post(opener, "/api/v2/app/setPreferences", json=json.dumps(prefs))
+    qbt.post("/api/v2/app/setPreferences", json=json.dumps(prefs))
     print(f"{C_GRN}done.{C_OFF} Existing seeders pause on next qBittorrent check.")
 
 
@@ -484,14 +544,14 @@ def pick_action(n_items: int) -> str:
     return next((act for label, act in table if label == choice), ACT_CANCEL)
 
 
-def pick_movie(items: list[tuple[str, str]]) -> tuple[str, str] | None:
-    titles = [title for title, _ in items]
+def pick_movie(items: list[Item]) -> Item | None:
+    titles = [item.title for item in items]
     pick = fzf_pick_one(titles, f"pick one of {len(items)} item(s) to save as a movie")
     if pick is None:
         return None
-    for title, link in items:
-        if title == pick:
-            return (title, link)
+    for item in items:
+        if item.title == pick:
+            return item
     return None
 
 
@@ -514,10 +574,10 @@ def get_name(default_name: str | None) -> str:
     return name
 
 
-def do_subscribe(opener, feed_url: str, name: str) -> None:
-    save_path = os.path.join(CFG["downloads"]["save_base"], name)
+def do_subscribe(qbt: QbtSession, feed_url: str, name: str, save_base: str) -> None:
+    save_path = os.path.join(save_base, name)
     print(f"{C_CYN}==>{C_OFF} adding feed {C_BLD}{name}{C_OFF}")
-    qbt_post(opener, "/api/v2/rss/addFeed", url=feed_url, path=name)
+    qbt.post("/api/v2/rss/addFeed", url=feed_url, path=name)
     rule = {
         "enabled": True,
         "mustContain": "",
@@ -534,14 +594,13 @@ def do_subscribe(opener, feed_url: str, name: str) -> None:
         "savePath": save_path,
     }
     print(f"{C_CYN}==>{C_OFF} adding rule  {C_BLD}{name}{C_OFF} -> {save_path}")
-    qbt_post(opener, "/api/v2/rss/setRule", ruleName=name, ruleDef=json.dumps(rule))
+    qbt.post("/api/v2/rss/setRule", ruleName=name, ruleDef=json.dumps(rule))
 
 
-def do_download(opener, links: list[str], name: str) -> None:
-    save_path = os.path.join(CFG["downloads"]["save_base"], name)
+def do_download(qbt: QbtSession, links: list[str], name: str, save_base: str) -> None:
+    save_path = os.path.join(save_base, name)
     print(f"{C_CYN}==>{C_OFF} adding {len(links)} torrent(s) -> {save_path}")
-    body = qbt_post(
-        opener,
+    body = qbt.post(
         "/api/v2/torrents/add",
         urls="\n".join(links),
         savepath=save_path,
@@ -550,11 +609,10 @@ def do_download(opener, links: list[str], name: str) -> None:
         die(f"qBittorrent torrents/add returned {body!r}")
 
 
-def do_movie(opener, title: str, link: str) -> None:
-    movie_path = CFG["downloads"]["movie_path"]
+def do_movie(qbt: QbtSession, title: str, link: str, movie_path: str) -> None:
     print(f"{C_CYN}==>{C_OFF} downloading movie -> {movie_path}")
     print(f"    {C_DIM}{title}{C_OFF}")
-    body = qbt_post(opener, "/api/v2/torrents/add", urls=link, savepath=movie_path)
+    body = qbt.post("/api/v2/torrents/add", urls=link, savepath=movie_path)
     if body.strip() != "Ok.":
         die(f"qBittorrent torrents/add returned {body!r}")
 
@@ -562,9 +620,8 @@ def do_movie(opener, title: str, link: str) -> None:
 # -------- main --------
 
 def main() -> None:
-    global CFG
-    CFG = load_config()
-    _init_log()
+    cfg = load_config()
+    init_log(cfg["logging"]["log_path"])
     log("INFO", f"=== anirss invoked: argv={sys.argv[1:]} ===")
     args = sys.argv[1:]
 
@@ -572,18 +629,18 @@ def main() -> None:
         print(__doc__)
         return
     if args and args[0] in ("--no-seed", "--apply-no-seed"):
-        apply_no_seed()
+        apply_no_seed(cfg["qbittorrent"])
         return
     if args and args[0] == "--config":
         print(f"config path: {CONFIG_PATH}")
-        print(json.dumps(CFG, indent=2))
+        print(json.dumps(cfg, indent=2))
         return
 
     arg = " ".join(args).strip()
     default_name: str | None = None
     feed_url: str | None = None
     download_links: list[str] | None = None
-    movie_choice: tuple[str, str] | None = None
+    movie_choice: Item | None = None
 
     if arg and looks_like_url(arg):
         if is_one_shot_url(arg):
@@ -598,40 +655,42 @@ def main() -> None:
         if not arg:
             die("empty search")
         default_name = arg
-        query, items = refine(arg)
+        query, items = refine(arg, cfg["search"])
+        if items:
+            default_name = show_name(items[0].title) or default_name
         action = pick_action(len(items))
         log("INFO", f"action={action}")
         if action == ACT_CANCEL:
             print(f"{C_DIM}cancelled.{C_OFF}")
             return
         if action == ACT_SUB:
-            feed_url = search_url(query)
+            feed_url = search_url(query, cfg["search"])
             print(f"{C_GRN}RSS URL:{C_OFF} {feed_url}")
         elif action == ACT_DL:
-            download_links = [link for _, link in items]
+            download_links = [item.link for item in items]
             print(f"{C_GRN}downloading {len(download_links)} item(s){C_OFF}")
         else:  # ACT_MOVIE
             movie_choice = pick_movie(items)
             if movie_choice is None:
                 print(f"{C_DIM}cancelled.{C_OFF}")
                 return
-            print(f"{C_GRN}movie:{C_OFF} {movie_choice[0]}")
+            print(f"{C_GRN}movie:{C_OFF} {movie_choice.title}")
 
     if movie_choice is None:
         name = get_name(default_name)
     else:
         name = ""
-    movie_title_log = repr(movie_choice[0]) if movie_choice else None
+    movie_title_log = repr(movie_choice.title) if movie_choice else None
     n_dl = len(download_links) if download_links else 0
     log("INFO", f"name={name!r} feed={feed_url!r} downloads={n_dl} movie={movie_title_log}")
 
-    opener = login_with_retry()
+    qbt = login_with_retry(cfg["qbittorrent"])
     if feed_url:
-        do_subscribe(opener, feed_url, name)
+        do_subscribe(qbt, feed_url, name, cfg["downloads"]["save_base"])
     if download_links:
-        do_download(opener, download_links, name)
+        do_download(qbt, download_links, name, cfg["downloads"]["save_base"])
     if movie_choice:
-        do_movie(opener, *movie_choice)
+        do_movie(qbt, movie_choice.title, movie_choice.link, cfg["downloads"]["movie_path"])
 
     log("INFO", "done")
     print(f"{C_GRN}done.{C_OFF}")
