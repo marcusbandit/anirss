@@ -27,7 +27,25 @@ if ! python3 -c "import tomllib" 2>/dev/null; then
 fi
 
 if ! command -v fzf >/dev/null 2>&1; then
-    warn "fzf not found — the interactive picker won't work. Install fzf for the full TUI."
+    echo "fzf not found — required for the interactive search/refine picker."
+    if   command -v apt-get >/dev/null 2>&1; then fzf_cmd="sudo apt-get install -y fzf"
+    elif command -v pacman  >/dev/null 2>&1; then fzf_cmd="sudo pacman -S --noconfirm fzf"
+    elif command -v dnf     >/dev/null 2>&1; then fzf_cmd="sudo dnf install -y fzf"
+    elif command -v zypper  >/dev/null 2>&1; then fzf_cmd="sudo zypper install -y fzf"
+    elif command -v brew    >/dev/null 2>&1; then fzf_cmd="brew install fzf"
+    elif command -v apk     >/dev/null 2>&1; then fzf_cmd="sudo apk add fzf"
+    else fzf_cmd=""
+    fi
+    if [ -n "$fzf_cmd" ]; then
+        echo "Suggested: $fzf_cmd"
+        read -r -p "Run it now? [y/N] " reply
+        case "$reply" in
+            [yY]|[yY][eE][sS]) eval "$fzf_cmd" || err "fzf install failed — re-run install.sh after fixing" ;;
+            *) err "install fzf manually, then re-run install.sh" ;;
+        esac
+    else
+        err "couldn't detect your package manager — install fzf manually, then re-run install.sh"
+    fi
 fi
 
 [ -f "$REPO_DIR/anirss" ] || err "anirss script not found at $REPO_DIR/anirss"
