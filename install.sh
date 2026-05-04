@@ -32,6 +32,22 @@ fi
 
 [ -f "$REPO_DIR/anirss" ] || err "anirss script not found at $REPO_DIR/anirss"
 
+# --- existing install check ---
+TARGET="$BIN_DIR/anirss"
+if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
+    if [ -L "$TARGET" ]; then
+        existing="symlink -> $(readlink "$TARGET")"
+    else
+        existing="file"
+    fi
+    echo "anirss is already installed at $TARGET ($existing)"
+    read -r -p "Reinstall? [y/N] " reply
+    case "$reply" in
+        [yY]|[yY][eE][sS]) ;;
+        *) ok "skipped — existing install left in place"; exit 0 ;;
+    esac
+fi
+
 # --- install ---
 mkdir -p "$BIN_DIR"
 install -m 755 "$REPO_DIR/anirss" "$BIN_DIR/anirss"
