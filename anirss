@@ -107,15 +107,25 @@ CFG: dict = {}  # populated in main()
 
 # -------- logging --------
 
-def log(level: str, msg: str) -> None:
-    if not CFG:
-        return
+_LOG_FILE = None
+
+
+def _init_log() -> None:
+    global _LOG_FILE
     path = CFG["logging"]["log_path"]
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(path, "a") as f:
-            f.write(f"{ts} [{level:5}] {msg}\n")
+        _LOG_FILE = open(path, "a", buffering=1)  # line-buffered
+    except OSError:
+        _LOG_FILE = None
+
+
+def log(level: str, msg: str) -> None:
+    if _LOG_FILE is None:
+        return
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        _LOG_FILE.write(f"{ts} [{level:5}] {msg}\n")
     except OSError:
         pass
 
@@ -126,10 +136,6 @@ def die(msg: str) -> None:
     if CFG:
         print(f"{C_DIM}log: {CFG['logging']['log_path']}{C_OFF}", file=sys.stderr)
     sys.exit(1)
-
-
-def _sanitize(fields: dict) -> dict:
-    return {k: ("***" if k.lower() == "password" else v) for k, v in fields.items()}
 
 
 # -------- nyaa --------
@@ -199,7 +205,7 @@ def title_tokens(title: str) -> list[str]:
 
 # -------- TUI picker --------
 
-def fzf_pick(options: list[str], header: str, multi: bool = False) -> list[str] | None:
+def fzf_pick_one(options: list[str], header: str) -> str | None:
     if not shutil.which("fzf") or not options:
         return None
     args = [
@@ -211,8 +217,6 @@ def fzf_pick(options: list[str], header: str, multi: bool = False) -> list[str] 
         "--cycle",
         "--no-info",
     ]
-    if multi:
-        args.append("--multi")
     proc = subprocess.run(
         args,
         input="\n".join(options),
@@ -221,13 +225,8 @@ def fzf_pick(options: list[str], header: str, multi: bool = False) -> list[str] 
     )
     if proc.returncode != 0:
         return None
-    lines = [l for l in (proc.stdout or "").splitlines() if l.strip()]
-    return lines or None
-
-
-def fzf_pick_one(options: list[str], header: str) -> str | None:
-    r = fzf_pick(options, header, multi=False)
-    return r[0] if r else None
+    line = (proc.stdout or "").strip()
+    return line or None
 
 
 # -------- search/refine --------
@@ -387,7 +386,7 @@ def qbt_login(password: str) -> tuple[object | None, str | None]:
 
 def qbt_post(opener, endpoint: str, **fields) -> str:
     base = CFG["qbittorrent"]["url"]
-    log("INFO", f"POST {endpoint} {_sanitize(fields)}")
+    log("INFO", f"POST {endpoint} {fields}")
     data = urllib.parse.urlencode(fields).encode()
     req = urllib.request.Request(f"{base}{endpoint}", data=data)
     try:
@@ -486,7 +485,6 @@ def get_name(default_name: str | None) -> str:
 
 def do_subscribe(opener, feed_url: str, name: str) -> None:
     save_path = os.path.join(CFG["downloads"]["save_base"], name)
-    os.makedirs(save_path, exist_ok=True)
     print(f"{C_CYN}==>{C_OFF} adding feed {C_BLD}{name}{C_OFF}")
     qbt_post(opener, "/api/v2/rss/addFeed", url=feed_url, path=name)
     rule = {
@@ -510,7 +508,6 @@ def do_subscribe(opener, feed_url: str, name: str) -> None:
 
 def do_download(opener, links: list[str], name: str) -> None:
     save_path = os.path.join(CFG["downloads"]["save_base"], name)
-    os.makedirs(save_path, exist_ok=True)
     print(f"{C_CYN}==>{C_OFF} adding {len(links)} torrent(s) -> {save_path}")
     body = qbt_post(
         opener,
@@ -524,7 +521,6 @@ def do_download(opener, links: list[str], name: str) -> None:
 
 def do_movie(opener, title: str, link: str) -> None:
     movie_path = CFG["downloads"]["movie_path"]
-    os.makedirs(movie_path, exist_ok=True)
     print(f"{C_CYN}==>{C_OFF} downloading movie -> {movie_path}")
     print(f"    {C_DIM}{title}{C_OFF}")
     body = qbt_post(opener, "/api/v2/torrents/add", urls=link, savepath=movie_path)
@@ -537,6 +533,7 @@ def do_movie(opener, title: str, link: str) -> None:
 def main() -> None:
     global CFG
     CFG = load_config()
+    _init_log()
     log("INFO", f"=== anirss invoked: argv={sys.argv[1:]} ===")
     args = sys.argv[1:]
 
