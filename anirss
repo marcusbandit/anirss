@@ -1,0 +1,643 @@
+#!/usr/bin/env python3
+"""anirss — search nyaa.si, then either subscribe (RSS rule) or download now in qBittorrent.
+
+Usage:
+    anirss                        Prompt for a search.
+    anirss [search query]         Search, refine, choose subscribe/download/movie.
+    anirss <rss-url>              Subscribe to an RSS feed URL.
+    anirss <magnet|*.torrent>     Download a single torrent now.
+    anirss --no-seed              Set qBittorrent to pause torrents at ratio 0.
+    anirss --config               Print the resolved config and exit.
+
+Config: ~/.config/anirss/config.toml (auto-created on first run).
+Logs:   ~/.local/state/anirss/anirss.log
+"""
+
+from __future__ import annotations
+
+import copy
+import datetime
+import getpass
+import http.cookiejar
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from collections import Counter, defaultdict
+from pathlib import Path
+
+# -------- ANSI --------
+C_RED, C_GRN, C_YEL, C_CYN, C_DIM, C_BLD, C_OFF = (
+    "\033[31m", "\033[32m", "\033[33m", "\033[36m", "\033[2m", "\033[1m", "\033[0m"
+)
+
+
+# -------- config --------
+CONFIG_PATH = Path("~/.config/anirss/config.toml").expanduser()
+
+DEFAULT_CONFIG = {
+    "qbittorrent": {
+        "url": "http://localhost:8080",
+        "username": "admin",
+        "login_retries": 3,
+    },
+    "downloads": {
+        # Subscriptions and bulk downloads create a per-name subdir under this.
+        "save_base": "~/Downloads/Anime",
+        # Single-file movie downloads land directly here (no per-name subdir).
+        "movie_path": "~/Downloads/Movies",
+    },
+    "search": {
+        "nyaa_url": "https://nyaa.si/",
+        # nyaa category id (e.g. "1_0" = Anime, "1_2" = Anime English-translated)
+        "category": "1_0",
+        # nyaa filter: "0" = no filter, "1" = no remakes, "2" = trusted only
+        "filter": "2",
+    },
+    "logging": {
+        "log_path": "~/.local/state/anirss/anirss.log",
+    },
+}
+
+DEFAULT_CONFIG_TOML = """\
+# anirss configuration
+
+[qbittorrent]
+url = "http://localhost:8080"
+username = "admin"
+# password attempts before giving up; the password itself is always prompted
+login_retries = 3
+
+[downloads]
+# Subscriptions and bulk downloads create a per-name subdirectory under this.
+save_base = "~/Downloads/Anime"
+# Single-file movie downloads land directly here (no per-name subdir).
+movie_path = "~/Downloads/Movies"
+
+[search]
+nyaa_url = "https://nyaa.si/"
+# nyaa category id: "1_0" = Anime (all), "1_2" = English-translated, etc.
+category = "1_0"
+# nyaa filter: "0" = no filter, "1" = no remakes, "2" = trusted only
+filter = "2"
+
+[logging]
+log_path = "~/.local/state/anirss/anirss.log"
+"""
+
+
+def _deep_merge(dst: dict, src: dict) -> dict:
+    for k, v in src.items():
+        if isinstance(v, dict) and isinstance(dst.get(k), dict):
+            _deep_merge(dst[k], v)
+        else:
+            dst[k] = v
+    return dst
+
+
+def load_config() -> dict:
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    if CONFIG_PATH.exists():
+        try:
+            with CONFIG_PATH.open("rb") as f:
+                user_cfg = tomllib.load(f)
+            _deep_merge(cfg, user_cfg)
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            print(f"{C_YEL}warning: bad config at {CONFIG_PATH}: {e}{C_OFF}", file=sys.stderr)
+    else:
+        try:
+            CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            CONFIG_PATH.write_text(DEFAULT_CONFIG_TOML)
+            print(f"{C_DIM}wrote default config: {CONFIG_PATH} (edit it!){C_OFF}", file=sys.stderr)
+        except OSError as e:
+            print(f"{C_YEL}warning: couldn't create {CONFIG_PATH}: {e}{C_OFF}", file=sys.stderr)
+    cfg["downloads"]["save_base"] = os.path.expanduser(cfg["downloads"]["save_base"])
+    cfg["downloads"]["movie_path"] = os.path.expanduser(cfg["downloads"]["movie_path"])
+    cfg["logging"]["log_path"] = os.path.expanduser(cfg["logging"]["log_path"])
+    return cfg
+
+
+CFG: dict = {}  # populated in main()
+
+
+# -------- logging --------
+
+def log(level: str, msg: str) -> None:
+    if not CFG:
+        return
+    path = CFG["logging"]["log_path"]
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(path, "a") as f:
+            f.write(f"{ts} [{level:5}] {msg}\n")
+    except OSError:
+        pass
+
+
+def die(msg: str) -> None:
+    log("ERROR", msg)
+    print(f"{C_RED}error:{C_OFF} {msg}", file=sys.stderr)
+    if CFG:
+        print(f"{C_DIM}log: {CFG['logging']['log_path']}{C_OFF}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _sanitize(fields: dict) -> dict:
+    return {k: ("***" if k.lower() == "password" else v) for k, v in fields.items()}
+
+
+# -------- nyaa --------
+
+def search_url(query: str) -> str:
+    qs = urllib.parse.urlencode({
+        "page": "rss",
+        "q": query,
+        "c": CFG["search"]["category"],
+        "f": CFG["search"]["filter"],
+    })
+    return f"{CFG['search']['nyaa_url']}?{qs}"
+
+
+def fetch_items(query: str) -> list[tuple[str, str]]:
+    """Return list of (title, link) pairs from the nyaa RSS for `query`."""
+    url = search_url(query)
+    log("INFO", f"GET {url}")
+    req = urllib.request.Request(url, headers={"User-Agent": "anirss/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = resp.read()
+    except urllib.error.URLError as e:
+        die(f"can't reach nyaa: {e}")
+    root = ET.fromstring(data)
+    out = []
+    for item in root.iter("item"):
+        t = item.find("title")
+        l = item.find("link")
+        if t is not None and t.text and l is not None and l.text:
+            out.append((t.text.strip(), l.text.strip()))
+    log("INFO", f"  -> {len(out)} items")
+    return out
+
+
+# -------- title parsing --------
+
+POSTER_RE  = re.compile(r"^\[([^\]]+)\]")
+TOKEN_RE   = re.compile(r"[\s\[\]\(\)]+")
+NUMERIC_RE = re.compile(r"^\d+$")
+HEX_RE     = re.compile(r"^[0-9A-Fa-f]{6,}$")
+EXT_RE     = re.compile(r"\.\w{2,4}$")
+RES_RE     = re.compile(r"\b(\d{3,4})p\b", re.IGNORECASE)
+
+
+def poster_of(title: str) -> str | None:
+    m = POSTER_RE.match(title)
+    return f"[{m.group(1)}]" if m else None
+
+
+def title_tokens(title: str) -> list[str]:
+    base = EXT_RE.sub("", title)
+    base = POSTER_RE.sub("", base, count=1)
+    out: list[str] = []
+    for tok in TOKEN_RE.split(base):
+        if not tok or tok == "-":
+            continue
+        if NUMERIC_RE.match(tok):
+            continue
+        if HEX_RE.match(tok) and not re.search(r"[g-zG-Z]", tok):
+            continue
+        if len(tok) < 2:
+            continue
+        out.append(tok)
+    return out
+
+
+# -------- TUI picker --------
+
+def fzf_pick(options: list[str], header: str, multi: bool = False) -> list[str] | None:
+    if not shutil.which("fzf") or not options:
+        return None
+    args = [
+        "fzf",
+        "--prompt", "filter > ",
+        "--header", header,
+        "--layout=reverse",
+        "--height", "60%",
+        "--cycle",
+        "--no-info",
+    ]
+    if multi:
+        args.append("--multi")
+    proc = subprocess.run(
+        args,
+        input="\n".join(options),
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        return None
+    lines = [l for l in (proc.stdout or "").splitlines() if l.strip()]
+    return lines or None
+
+
+def fzf_pick_one(options: list[str], header: str) -> str | None:
+    r = fzf_pick(options, header, multi=False)
+    return r[0] if r else None
+
+
+# -------- search/refine --------
+
+DONE = "[done — finalize this query]"
+
+
+def show_titles(titles: list[str], cap: int = 15) -> None:
+    for t in titles[:cap]:
+        print(f"  {C_DIM}·{C_OFF} {t}")
+    if len(titles) > cap:
+        print(f"  {C_DIM}... and {len(titles) - cap} more{C_OFF}")
+
+
+def refine(initial_query: str) -> tuple[str, list[tuple[str, str]]]:
+    """Return (final_query, list of (title, link)) after interactive refinement."""
+    query = initial_query.strip()
+    log("INFO", f"refine start: {query!r}")
+
+    print(f"{C_BLD}Query:{C_OFF} {query}")
+    print(f"{C_DIM}fetching nyaa.si...{C_OFF}")
+    items = fetch_items(query)
+    if not items:
+        die("no results for that query")
+
+    # Auto-pick highest <n>p iff the user didn't specify a resolution AND
+    # every result has a <n>p token.
+    if not RES_RE.search(query):
+        per_max = [
+            max((int(m.group(1)) for m in RES_RE.finditer(t)), default=None)
+            for t, _ in items
+        ]
+        missing = sum(1 for r in per_max if r is None)
+        if missing == 0:
+            highest = max(per_max)  # type: ignore[arg-type]
+            tok = f"{highest}p"
+            print(f"{C_YEL}[auto-appending highest available resolution: {tok}]{C_OFF}")
+            log("INFO", f"auto-append {tok} (max across {len(items)} titles)")
+            query = f"{query} {tok}"
+            items = [it for it, r in zip(items, per_max) if r == highest]
+        else:
+            print(
+                f"{C_DIM}[skipping auto-resolution: {missing}/{len(items)} "
+                f"title(s) lack a <n>p token]{C_OFF}"
+            )
+            log("INFO", f"skip auto-resolution: {missing} titles lack one")
+
+    selected = list(items)
+
+    while True:
+        n = len(selected)
+        print()
+        print(f"{C_BLD}Query:{C_OFF} {query}")
+        print(f"{C_BLD}{n} result(s):{C_OFF}")
+        show_titles([t for t, _ in selected])
+
+        if n <= 1:
+            break
+
+        counts: Counter[str] = Counter()
+        for t, _ in selected:
+            seen = set()
+            p = poster_of(t)
+            if p:
+                seen.add(p)
+            for tok in title_tokens(t):
+                seen.add(tok)
+            for s in seen:
+                counts[s] += 1
+
+        refinable = [t for t, c in counts.items() if 1 < c < n]
+
+        def members_of(tok: str) -> frozenset[int]:
+            return frozenset(
+                i for i, (t, _) in enumerate(selected)
+                if (tok.startswith("[") and poster_of(t) == tok)
+                or (not tok.startswith("[") and tok in title_tokens(t))
+            )
+
+        groups: dict[frozenset[int], list[str]] = defaultdict(list)
+        for tok in refinable:
+            groups[members_of(tok)].append(tok)
+
+        group_list = []
+        for members, toks in groups.items():
+            toks_sorted = sorted(toks, key=lambda x: (not x.startswith("["), -len(x), x))
+            label = "+".join(toks_sorted)
+            has_poster = any(t.startswith("[") for t in toks)
+            group_list.append((label, toks_sorted, len(members), has_poster))
+
+        group_list.sort(key=lambda g: (not g[3], -g[2], g[0]))
+
+        if not group_list:
+            print(f"{C_DIM}(no further refinements available){C_OFF}")
+            break
+
+        opts = [f"{label:<28} ({cnt})" for label, _, cnt, _ in group_list] + [DONE]
+        choice = fzf_pick_one(
+            opts,
+            f"{n} results — pick a token to filter, or {DONE} / esc to finalize",
+        )
+        if choice is None or choice == DONE:
+            break
+
+        chosen_label = choice.rsplit(" (", 1)[0].rstrip()
+        chosen_group = next((g for g in group_list if g[0] == chosen_label), None)
+        if chosen_group is None:
+            continue
+        chosen_toks = chosen_group[1]
+        log("INFO", f"picked {chosen_label!r} -> tokens {chosen_toks}")
+
+        new_selected = list(selected)
+        for tok in chosen_toks:
+            if tok.startswith("["):
+                new_selected = [it for it in new_selected if poster_of(it[0]) == tok]
+            else:
+                new_selected = [it for it in new_selected if tok in title_tokens(it[0])]
+        if not new_selected:
+            print(f"{C_YEL}filter would yield 0 results — skipped{C_OFF}")
+            log("WARN", f"group {chosen_label!r} would yield 0 — skipped")
+            continue
+        selected = new_selected
+
+        for tok in chosen_toks:
+            if tok.startswith("[") and not query.lstrip().startswith("["):
+                query = f"{tok} {query}"
+            elif not tok.startswith("["):
+                query = f"{query} {tok}"
+        log("INFO", f"after pick: {len(selected)} results, query={query!r}")
+
+    print()
+    print(f"{C_GRN}{C_BLD}Final query:{C_OFF} {query}")
+    return query, selected
+
+
+# -------- qBittorrent --------
+
+def qbt_login(password: str) -> tuple[object | None, str | None]:
+    base = CFG["qbittorrent"]["url"]
+    user = CFG["qbittorrent"]["username"]
+    cj = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+    opener.addheaders = [("Referer", base)]
+    data = urllib.parse.urlencode({"username": user, "password": password}).encode()
+    req = urllib.request.Request(f"{base}/api/v2/auth/login", data=data)
+    log("INFO", f"POST /api/v2/auth/login user={user}")
+    try:
+        with opener.open(req, timeout=10) as resp:
+            body = resp.read().decode().strip()
+    except urllib.error.URLError as e:
+        return None, f"can't reach qBittorrent at {base}: {e}"
+    log("INFO", f"  -> {body}")
+    if body != "Ok.":
+        return None, f"login: qBittorrent returned {body!r}"
+    return opener, None
+
+
+def qbt_post(opener, endpoint: str, **fields) -> str:
+    base = CFG["qbittorrent"]["url"]
+    log("INFO", f"POST {endpoint} {_sanitize(fields)}")
+    data = urllib.parse.urlencode(fields).encode()
+    req = urllib.request.Request(f"{base}{endpoint}", data=data)
+    try:
+        with opener.open(req, timeout=15) as resp:
+            body = resp.read().decode()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace") if e.fp else ""
+        log("ERROR", f"  -> HTTP {e.code}: {body or e.reason}")
+        die(f"qBittorrent {endpoint} -> HTTP {e.code}: {body or e.reason}")
+    log("INFO", f"  -> {body[:200]!r}{'...' if len(body) > 200 else ''}")
+    return body
+
+
+def login_with_retry():
+    retries = int(CFG["qbittorrent"]["login_retries"])
+    for attempt in range(1, retries + 1):
+        try:
+            password = getpass.getpass(f"qBittorrent password ({attempt}/{retries}): ")
+        except (EOFError, KeyboardInterrupt):
+            die("cancelled")
+        if not password:
+            print(f"{C_YEL}empty — try again{C_OFF}")
+            continue
+        opener, err = qbt_login(password)
+        if opener is not None:
+            return opener
+        print(f"{C_RED}{err}{C_OFF}")
+    die(f"login failed after {retries} attempts")
+
+
+def apply_no_seed() -> None:
+    print(f"{C_BLD}Applying global no-seed:{C_OFF} max_ratio=0, action=pause")
+    opener = login_with_retry()
+    prefs = {
+        "max_ratio_enabled": True,
+        "max_ratio": 0.0,
+        "max_ratio_act": 0,
+    }
+    qbt_post(opener, "/api/v2/app/setPreferences", json=json.dumps(prefs))
+    print(f"{C_GRN}done.{C_OFF} Existing seeders pause on next qBittorrent check.")
+
+
+# -------- main flow helpers --------
+
+ACT_SUB, ACT_DL, ACT_MOVIE, ACT_CANCEL = "subscribe", "download", "movie", "cancel"
+
+
+def looks_like_url(s: str) -> bool:
+    return s.startswith(("http://", "https://", "magnet:"))
+
+
+def is_one_shot_url(s: str) -> bool:
+    return s.startswith("magnet:") or bool(re.search(r"\.torrent($|[?#])", s, re.IGNORECASE))
+
+
+def pick_action(n_items: int) -> str:
+    options = [
+        f"subscribe to this query as a recurring feed",
+        f"download {n_items} matching item(s) now",
+        f"download as movie (pick one from the list)",
+        "cancel",
+    ]
+    choice = fzf_pick_one(options, "action?")
+    if choice is None:
+        return ACT_CANCEL
+    if choice.startswith("subscribe"):
+        return ACT_SUB
+    if choice.startswith("download as movie"):
+        return ACT_MOVIE
+    if choice.startswith("download"):
+        return ACT_DL
+    return ACT_CANCEL
+
+
+def pick_movie(items: list[tuple[str, str]]) -> tuple[str, str] | None:
+    titles = [t for t, _ in items]
+    pick = fzf_pick_one(titles, f"pick one of {len(items)} item(s) to save as a movie")
+    if pick is None:
+        return None
+    for t, link in items:
+        if t == pick:
+            return (t, link)
+    return None
+
+
+def prompt(label: str) -> str:
+    try:
+        return input(label).strip()
+    except (EOFError, KeyboardInterrupt):
+        die("cancelled")
+
+
+def get_name(default_name: str | None) -> str:
+    label = f"Name [{default_name}]: " if default_name else "Name: "
+    name = prompt(label)
+    if not name and default_name:
+        name = default_name
+    if not name:
+        die("name cannot be empty")
+    if "/" in name or "\\" in name:
+        die("name must not contain '/' or '\\'")
+    return name
+
+
+def do_subscribe(opener, feed_url: str, name: str) -> None:
+    save_path = os.path.join(CFG["downloads"]["save_base"], name)
+    os.makedirs(save_path, exist_ok=True)
+    print(f"{C_CYN}==>{C_OFF} adding feed {C_BLD}{name}{C_OFF}")
+    qbt_post(opener, "/api/v2/rss/addFeed", url=feed_url, path=name)
+    rule = {
+        "enabled": True,
+        "mustContain": "",
+        "mustNotContain": "",
+        "useRegex": False,
+        "episodeFilter": "",
+        "smartFilter": False,
+        "previouslyMatchedEpisodes": [],
+        "affectedFeeds": [feed_url],
+        "ignoreDays": 0,
+        "lastMatch": "",
+        "addPaused": None,
+        "assignedCategory": "",
+        "savePath": save_path,
+    }
+    print(f"{C_CYN}==>{C_OFF} adding rule  {C_BLD}{name}{C_OFF} -> {save_path}")
+    qbt_post(opener, "/api/v2/rss/setRule", ruleName=name, ruleDef=json.dumps(rule))
+
+
+def do_download(opener, links: list[str], name: str) -> None:
+    save_path = os.path.join(CFG["downloads"]["save_base"], name)
+    os.makedirs(save_path, exist_ok=True)
+    print(f"{C_CYN}==>{C_OFF} adding {len(links)} torrent(s) -> {save_path}")
+    body = qbt_post(
+        opener,
+        "/api/v2/torrents/add",
+        urls="\n".join(links),
+        savepath=save_path,
+    )
+    if body.strip() != "Ok.":
+        die(f"qBittorrent torrents/add returned {body!r}")
+
+
+def do_movie(opener, title: str, link: str) -> None:
+    movie_path = CFG["downloads"]["movie_path"]
+    os.makedirs(movie_path, exist_ok=True)
+    print(f"{C_CYN}==>{C_OFF} downloading movie -> {movie_path}")
+    print(f"    {C_DIM}{title}{C_OFF}")
+    body = qbt_post(opener, "/api/v2/torrents/add", urls=link, savepath=movie_path)
+    if body.strip() != "Ok.":
+        die(f"qBittorrent torrents/add returned {body!r}")
+
+
+# -------- main --------
+
+def main() -> None:
+    global CFG
+    CFG = load_config()
+    log("INFO", f"=== anirss invoked: argv={sys.argv[1:]} ===")
+    args = sys.argv[1:]
+
+    if args and args[0] in ("-h", "--help"):
+        print(__doc__)
+        return
+    if args and args[0] in ("--no-seed", "--apply-no-seed"):
+        apply_no_seed()
+        return
+    if args and args[0] == "--config":
+        print(f"config path: {CONFIG_PATH}")
+        print(json.dumps(CFG, indent=2))
+        return
+
+    arg = " ".join(args).strip()
+    default_name: str | None = None
+    feed_url: str | None = None
+    download_links: list[str] | None = None
+    movie_choice: tuple[str, str] | None = None
+
+    if arg and looks_like_url(arg):
+        if is_one_shot_url(arg):
+            download_links = [arg]
+            print(f"{C_BLD}Direct download:{C_OFF} {arg}")
+        else:
+            feed_url = arg
+            print(f"{C_BLD}Feed URL:{C_OFF} {arg}")
+    else:
+        if not arg:
+            arg = prompt("Search: ")
+        if not arg:
+            die("empty search")
+        default_name = arg
+        query, items = refine(arg)
+        action = pick_action(len(items))
+        log("INFO", f"action={action}")
+        if action == ACT_CANCEL:
+            print(f"{C_DIM}cancelled.{C_OFF}")
+            return
+        if action == ACT_SUB:
+            feed_url = search_url(query)
+            print(f"{C_GRN}RSS URL:{C_OFF} {feed_url}")
+        elif action == ACT_DL:
+            download_links = [link for _, link in items]
+            print(f"{C_GRN}downloading {len(download_links)} item(s){C_OFF}")
+        else:  # ACT_MOVIE
+            movie_choice = pick_movie(items)
+            if movie_choice is None:
+                print(f"{C_DIM}cancelled.{C_OFF}")
+                return
+            print(f"{C_GRN}movie:{C_OFF} {movie_choice[0]}")
+
+    if movie_choice is None:
+        name = get_name(default_name)
+    else:
+        name = ""
+    movie_title_log = repr(movie_choice[0]) if movie_choice else None
+    n_dl = len(download_links) if download_links else 0
+    log("INFO", f"name={name!r} feed={feed_url!r} downloads={n_dl} movie={movie_title_log}")
+
+    opener = login_with_retry()
+    if feed_url:
+        do_subscribe(opener, feed_url, name)
+    if download_links:
+        do_download(opener, download_links, name)
+    if movie_choice:
+        do_movie(opener, *movie_choice)
+
+    log("INFO", "done")
+    print(f"{C_GRN}done.{C_OFF}")
+
+
+if __name__ == "__main__":
+    main()
