@@ -228,3 +228,30 @@ def test_apply_pick_combined_tokens():
     assert len(selected) == 1
     assert selected[0].title == "[A] Show HEVC 1080p"
     assert query == "[A] Show HEVC"
+
+
+# -------- add_exclude_to_query --------
+
+def test_add_exclude_to_query_single_word():
+    assert anirss.add_exclude_to_query("Show", "2nd") == "Show -2nd"
+
+
+def test_add_exclude_to_query_quotes_term_with_spaces():
+    assert anirss.add_exclude_to_query("Show", "2nd Season") == 'Show -"2nd Season"'
+
+
+def test_add_exclude_to_query_strips_leading_dashes():
+    assert anirss.add_exclude_to_query("Show", "-A") == "Show -A"
+    assert anirss.add_exclude_to_query("Show", "--A") == "Show -A"
+
+
+def test_add_exclude_to_query_empty_term_is_noop():
+    assert anirss.add_exclude_to_query("Show", "") == "Show"
+
+
+def test_add_exclude_to_query_dash_only_term_is_noop():
+    assert anirss.add_exclude_to_query("Show", "--") == "Show"
+
+
+def test_add_exclude_to_query_whitespace_only_is_noop():
+    assert anirss.add_exclude_to_query("Show", "   ") == "Show"

@@ -8,6 +8,7 @@ Usage:
     anirss <magnet|*.torrent>     Download a single torrent now.
     anirss --no-seed              Set qBittorrent to pause torrents at ratio 0.
     anirss --config               Print the resolved config and exit.
+    anirss --migrate-config       Append any new default sections to your config.toml.
 
 Config: ~/.config/anirss/config.toml (auto-created on first run).
 Logs:   ~/.local/state/anirss/anirss.log
@@ -36,9 +37,27 @@ from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 
 # -------- ANSI --------
-C_RED, C_GRN, C_YEL, C_CYN, C_DIM, C_BLD, C_OFF = (
-    "\033[31m", "\033[32m", "\033[33m", "\033[36m", "\033[2m", "\033[1m", "\033[0m"
+C_RED, C_GRN, C_YEL, C_BLU, C_MAG, C_CYN, C_DIM, C_BLD, C_OFF = (
+    "\033[31m", "\033[32m", "\033[33m", "\033[34m", "\033[35m",
+    "\033[36m", "\033[2m", "\033[1m", "\033[0m",
 )
+
+# Force a strong highlight for typed-text matches in fzf (default theme can be too subtle).
+# `hl` = matched chars in non-current rows; `hl+` = matched chars in the current row.
+FZF_HL_COLORS = "hl:bright-yellow:bold,hl+:bright-yellow:bold:reverse"
+
+# Editing keybindings present in every fzf invocation. Alt-Backspace (Option+Delete
+# on macOS) deletes the previous word; without an explicit bind fzf treats the ESC
+# prefix as the start of an unfinished escape sequence and the picker appears frozen.
+FZF_BINDS = (
+    "alt-bspace:backward-kill-word,"
+    "alt-bs:backward-kill-word,"
+    "ctrl-w:backward-kill-word"
+)
+
+# Set from cfg in main(); guards leechers in format_stats. Default True is only
+# relevant if format_stats is called before main() (none currently does).
+_SHOW_LEECHERS: bool = True
 
 
 # -------- config --------
@@ -66,11 +85,16 @@ class LoggingConfig(TypedDict):
     log_path: str
 
 
+class DisplayConfig(TypedDict):
+    show_leechers: bool
+
+
 class AnirssConfig(TypedDict):
     qbittorrent: QbtConfig
     downloads: DownloadsConfig
     search: SearchConfig
     logging: LoggingConfig
+    display: DisplayConfig
 
 
 DEFAULT_CONFIG_TOML = """\
@@ -97,6 +121,10 @@ filter = "2"
 
 [logging]
 log_path = "~/.local/state/anirss/anirss.log"
+
+[display]
+# Show leechers count alongside seeders (e.g. "45s/5l"). Off by default.
+show_leechers = false
 """
 
 DEFAULT_CONFIG: AnirssConfig = cast(AnirssConfig, tomllib.loads(DEFAULT_CONFIG_TOML))
@@ -109,6 +137,52 @@ def _deep_merge(dst, src):  # type-erased; works on plain dicts and TypedDicts
         else:
             dst[key] = value
     return dst
+
+
+SECTION_HEADER_RE = re.compile(r"^\[([^\[\]]+)\]\s*$", re.MULTILINE)
+
+
+def _split_toml_sections(text: str) -> list[tuple[str, str]]:
+    """Split a TOML string into (section_name, full_block_including_header) pairs.
+    A leading preamble (before the first [section] line) is returned as ('', body).
+    """
+    matches = list(SECTION_HEADER_RE.finditer(text))
+    if not matches:
+        return [("", text)]
+    sections: list[tuple[str, str]] = []
+    if matches[0].start() > 0:
+        sections.append(("", text[:matches[0].start()]))
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        sections.append((m.group(1), text[m.start():end]))
+    return sections
+
+
+def migrate_config() -> None:
+    """Append default-config sections that aren't present in the user's
+    config.toml. Existing keys, values, and comments are left untouched.
+    """
+    if not CONFIG_PATH.exists():
+        print(f"{C_DIM}no config at {CONFIG_PATH} — run anirss once to bootstrap.{C_OFF}")
+        return
+    user_text = CONFIG_PATH.read_text()
+    try:
+        user_cfg = tomllib.loads(user_text)
+    except tomllib.TOMLDecodeError as e:
+        die(f"can't parse {CONFIG_PATH}: {e}")
+
+    defaults = _split_toml_sections(DEFAULT_CONFIG_TOML)
+    missing = [(name, body) for name, body in defaults if name and name not in user_cfg]
+    if not missing:
+        print(f"{C_GRN}config up to date{C_OFF} — no new sections in {CONFIG_PATH}")
+        return
+
+    appended = "\n".join(body.rstrip() for _, body in missing)
+    new_text = user_text.rstrip() + "\n\n" + appended + "\n"
+    CONFIG_PATH.write_text(new_text)
+    print(f"{C_GRN}migrated {CONFIG_PATH}:{C_OFF} appended {len(missing)} new section(s)")
+    for name, _ in missing:
+        print(f"  {C_CYN}+{C_OFF} [{name}]")
 
 
 def load_config() -> AnirssConfig:
@@ -170,6 +244,11 @@ def die(msg: str) -> NoReturn:
 class Item(NamedTuple):
     title: str
     link: str
+    seeders: int = 0
+    leechers: int = 0
+    downloads: int = 0
+    size: str = ""
+    category: str = ""
 
 
 class Group(NamedTuple):
@@ -191,6 +270,24 @@ def search_url(query: str, search: SearchConfig) -> str:
     return f"{search['nyaa_url']}?{qs}"
 
 
+NYAA_NS = {"nyaa": "https://nyaa.si/xmlns/nyaa"}
+
+
+def _int_text(elem: ET.Element | None) -> int:
+    if elem is None or not elem.text:
+        return 0
+    try:
+        return int(elem.text.strip())
+    except ValueError:
+        return 0
+
+
+def _str_text(elem: ET.Element | None) -> str:
+    if elem is None or not elem.text:
+        return ""
+    return elem.text.strip()
+
+
 def fetch_items(query: str, search: SearchConfig) -> list[Item]:
     """Return list of Items from the nyaa RSS for `query`."""
     url = search_url(query, search)
@@ -207,7 +304,15 @@ def fetch_items(query: str, search: SearchConfig) -> list[Item]:
         title = entry.find("title")
         link = entry.find("link")
         if title is not None and title.text and link is not None and link.text:
-            out.append(Item(title.text.strip(), link.text.strip()))
+            out.append(Item(
+                title=title.text.strip(),
+                link=link.text.strip(),
+                seeders=_int_text(entry.find("nyaa:seeders", NYAA_NS)),
+                leechers=_int_text(entry.find("nyaa:leechers", NYAA_NS)),
+                downloads=_int_text(entry.find("nyaa:downloads", NYAA_NS)),
+                size=_str_text(entry.find("nyaa:size", NYAA_NS)),
+                category=_str_text(entry.find("nyaa:category", NYAA_NS)),
+            ))
     log("INFO", f"  -> {len(out)} items")
     return out
 
@@ -220,6 +325,7 @@ NUMERIC_RE  = re.compile(r"^\d+$")
 HEX_RE      = re.compile(r"^[0-9A-Fa-f]{6,}$")
 EXT_RE      = re.compile(r"\.\w{2,4}$")
 RES_RE      = re.compile(r"\b(\d{3,4})p\b", re.IGNORECASE)
+ANSI_RE     = re.compile(r"\x1b\[[0-9;]*m")
 # " - 04" or " - 04v2" followed by space, end, or bracket; not " - 1080p".
 EPISODE_RE  = re.compile(r"\s+-\s+\d{1,4}(?:v\d+)?(?=\s|$|\[)")
 META_RE     = re.compile(r"\s*\[")
@@ -270,12 +376,16 @@ def fzf_pick_one(options: list[str], header: str) -> str | None:
         return None
     args = [
         "fzf",
+        "--ansi",
+        "--color", FZF_HL_COLORS,
+        "--bind", FZF_BINDS,
         "--prompt", "filter > ",
         "--header", header,
         "--layout=reverse",
         "--height", "60%",
         "--cycle",
         "--no-info",
+        "--preview-window=hidden",
     ]
     proc = subprocess.run(
         args,
@@ -289,16 +399,221 @@ def fzf_pick_one(options: list[str], header: str) -> str | None:
     return line or None
 
 
+def fzf_pick_with_query(
+    options: list[str], header: str
+) -> tuple[str, str | None, bool]:
+    """Run fzf with --print-query.
+
+    Returns (typed_query, selected_choice_or_None, cancelled).
+    cancelled=True means esc/ctrl-c — caller should treat as "done".
+    cancelled=False with choice=None means Enter was pressed with no fzf match
+    (custom-filter attempt).
+    """
+    if not shutil.which("fzf") or not options:
+        return "", None, True
+    args = [
+        "fzf",
+        "--ansi",
+        "--color", FZF_HL_COLORS,
+        "--bind", FZF_BINDS,
+        "--prompt", "filter > ",
+        "--header", header,
+        "--layout=reverse",
+        "--height", "60%",
+        "--cycle",
+        "--no-info",
+        "--print-query",
+        "--preview-window=hidden",
+    ]
+    proc = subprocess.run(
+        args,
+        input="\n".join(options),
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    out = proc.stdout or ""
+    lines = out.split("\n")
+    query = lines[0].strip() if lines else ""
+    if proc.returncode == 0:
+        choice = lines[1].strip() if len(lines) >= 2 else ""
+        return query, (choice or None), False
+    if proc.returncode == 1:
+        # Enter pressed with no match — treat query as a custom filter.
+        return query, None, False
+    # 130 = esc/ctrl-c, anything else is treated as cancel.
+    return "", None, True
+
+
+def view_all_titles(items: list[Item]) -> None:
+    """Read-only fzf viewer over `items`. Esc or Enter returns to caller."""
+    if not shutil.which("fzf") or not items:
+        return
+    width = max(40, shutil.get_terminal_size((120, 24)).columns - 3)
+    lines = [
+        right_anchor(
+            f"{format_stats(item)}  {colorize_title(item.title)}",
+            category_chip(item),
+            width,
+        ) if item.category else
+        f"{format_stats(item)}  {colorize_title(item.title)}"
+        for item in items
+    ]
+    args = [
+        "fzf",
+        "--ansi",
+        "--color", FZF_HL_COLORS,
+        "--bind", FZF_BINDS,
+        "--prompt", "view > ",
+        "--header", f"all {len(items)} titles · esc/enter to return",
+        "--layout=reverse",
+        "--height", "90%",
+        "--cycle",
+        "--no-info",
+        "--preview-window=hidden",
+    ]
+    subprocess.run(
+        args,
+        input="\n".join(lines),
+        text=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+
 # -------- search/refine --------
 
 DONE = "[done — finalize this query]"
+EXCLUDE = "[- exclude term...]"
 
 
-def show_titles(titles: list[str], cap: int = 15) -> None:
-    for title in titles[:cap]:
-        print(f"  {C_DIM}·{C_OFF} {title}")
-    if len(titles) > cap:
-        print(f"  {C_DIM}... and {len(titles) - cap} more{C_OFF}")
+class Pick(NamedTuple):
+    """Result of pick_group: a kind and (for "tokens"/"custom") the relevant terms."""
+    kind: str  # "tokens" | "done" | "exclude" | "show_all" | "custom"
+    tokens: list[str]
+
+
+PICK_DONE = Pick("done", [])
+PICK_EXCLUDE = Pick("exclude", [])
+PICK_SHOW_ALL = Pick("show_all", [])
+
+
+def colorize_title(title: str) -> str:
+    """Color the leading [poster] cyan; leave the rest of the title alone."""
+    match = POSTER_RE.match(title)
+    if not match:
+        return title
+    return f"{C_CYN}{match.group(0)}{C_OFF}{title[match.end():]}"
+
+
+def colorize_picker_label(label: str, width: int = 0) -> str:
+    """Color a group label: poster brackets cyan, '+' joiner dim. Pads to `width`
+    visible chars (counted on the plain text, not the ANSI-colored output).
+    """
+    parts = label.split("+")
+    colored: list[str] = []
+    for part in parts:
+        if part.startswith("[") and part.endswith("]"):
+            colored.append(f"{C_CYN}{part}{C_OFF}")
+        else:
+            colored.append(part)
+    out = f"{C_DIM}+{C_OFF}".join(colored)
+    pad = max(0, width - len(label))
+    return out + (" " * pad)
+
+
+def ansi_strip(s: str) -> str:
+    return ANSI_RE.sub("", s)
+
+
+def right_anchor(left: str, right: str, width: int) -> str:
+    """Pad with spaces so `right` ends at column `width`.
+    ANSI in either side is allowed; padding is computed against visible width.
+    """
+    pad = width - len(ansi_strip(left)) - len(ansi_strip(right))
+    if pad < 1:
+        pad = 1
+    return f"{left}{' ' * pad}{right}"
+
+
+def category_chip(item: Item) -> str:
+    return f"{C_DIM}{item.category}{C_OFF}" if item.category else ""
+
+
+def truncate_ansi(s: str, max_visible: int) -> str:
+    """Cut `s` to `max_visible` visible chars, copying ANSI escapes verbatim.
+    If a cut happens, append a dim ellipsis."""
+    if len(ansi_strip(s)) <= max_visible:
+        return s
+    out: list[str] = []
+    visible = 0
+    i = 0
+    while i < len(s):
+        ch = s[i]
+        if ch == "\x1b":
+            end = s.find("m", i)
+            if end == -1:
+                break
+            out.append(s[i:end + 1])
+            i = end + 1
+            continue
+        if visible >= max_visible - 1:
+            break
+        out.append(ch)
+        visible += 1
+        i += 1
+    out.append(f"{C_DIM}…{C_OFF}")
+    return "".join(out)
+
+
+def _grade_seeders(seeders: int) -> str:
+    if seeders >= 20:
+        return C_GRN
+    if seeders >= 5:
+        return C_YEL
+    return C_RED
+
+
+def _grade_downloads(downloads: int) -> str:
+    if downloads >= 500:
+        return C_GRN
+    if downloads >= 50:
+        return C_YEL
+    return C_DIM
+
+
+def format_stats(item: Item) -> str:
+    """One-line colored stats: 530 dl · 45s/5l · 926.7 MiB.
+    Leechers segment is gated on the [display] config."""
+    dl_c = _grade_downloads(item.downloads)
+    s_c = _grade_seeders(item.seeders)
+    seed = f"{s_c}{item.seeders:>3}{C_OFF}{C_DIM}s{C_OFF}"
+    if _SHOW_LEECHERS:
+        seed += f"/{C_RED}{item.leechers}{C_OFF}{C_DIM}l{C_OFF}"
+    parts = [f"{dl_c}{item.downloads:>5} dl{C_OFF}", seed]
+    if item.size:
+        parts.append(f"{C_DIM}{item.size:>10}{C_OFF}")
+    return f"  {C_DIM}·{C_OFF}  ".join(parts)
+
+
+def show_titles(items: list[Item], cap: int = 15) -> None:
+    width = shutil.get_terminal_size((120, 24)).columns
+    inner = max(40, width - 4)  # 4 = "│ " + " │"
+    bar = "─" * (inner + 2)
+    print(f"{C_DIM}╭{bar}╮{C_OFF}")
+    for item in items[:cap]:
+        cat = category_chip(item)
+        cat_w = len(item.category) + 1 if item.category else 0  # +1 for gap
+        body_max = max(10, inner - cat_w)
+        body = truncate_ansi(f"{format_stats(item)}  {colorize_title(item.title)}", body_max)
+        if cat:
+            line = right_anchor(body, cat, inner)
+        else:
+            line = body + " " * max(0, inner - len(ansi_strip(body)))
+        print(f"{C_DIM}│{C_OFF} {line} {C_DIM}│{C_OFF}")
+    print(f"{C_DIM}╰{bar}╯{C_OFF}")
+    if len(items) > cap:
+        more = len(items) - cap
+        print(f"  {C_DIM}... and {more} more "
+              f"({C_OFF}{C_YEL}use [show all] in the picker{C_OFF}{C_DIM}){C_OFF}")
 
 
 def auto_resolution(query: str, items: list[Item]) -> tuple[str, list[Item]]:
@@ -364,21 +679,51 @@ def compute_groups(selected: list[Item]) -> list[Group]:
     return groups
 
 
-def pick_group(groups: list[Group], n_results: int) -> list[str] | None:
-    """Show the picker. Return chosen tokens, or None to finalize."""
-    options = [f"{g.label:<28} ({g.member_count})" for g in groups] + [DONE]
-    choice = fzf_pick_one(
-        options,
-        f"{n_results} results — pick a token to filter, or {DONE} / esc to finalize",
+def pick_group(groups: list[Group], selected: list[Item]) -> Pick:
+    """Show the picker. Return a Pick (kind=tokens|done|exclude|show_all|custom).
+
+    Typing text + Enter with no fzf match becomes Pick("custom", [text]) so the
+    caller can decide whether to fold the text into the nyaa query.
+    """
+    n_results = len(selected)
+    show_all_label = f"[show all {n_results} titles]"
+    label_width = 28
+    options = [
+        f"{colorize_picker_label(g.label, label_width)} {C_DIM}({g.member_count}){C_OFF}"
+        for g in groups
+    ]
+    options += [
+        f"{C_YEL}{show_all_label}{C_OFF}",
+        f"{C_GRN}{DONE}{C_OFF}",
+        f"{C_RED}{EXCLUDE}{C_OFF}",
+    ]
+    header = (
+        f"{n_results} results — pick a token, type to filter "
+        f"(adds to query if no match), or finalize (esc)"
     )
-    if choice is None or choice == DONE:
-        return None
-    chosen_label = choice.rsplit(" (", 1)[0].rstrip()
+
+    query, choice, cancelled = fzf_pick_with_query(options, header)
+
+    if cancelled:
+        return PICK_DONE
+    if choice is None:
+        if query:
+            log("INFO", f"custom-filter typed: {query!r}")
+            return Pick("custom", [query])
+        return PICK_DONE
+    choice_plain = ansi_strip(choice)
+    if choice_plain == DONE:
+        return PICK_DONE
+    if choice_plain == EXCLUDE:
+        return PICK_EXCLUDE
+    if choice_plain == show_all_label:
+        return PICK_SHOW_ALL
+    chosen_label = choice_plain.rsplit(" (", 1)[0].rstrip()
     chosen = next((g for g in groups if g.label == chosen_label), None)
     if chosen is None:
-        return None
+        return PICK_DONE
     log("INFO", f"picked {chosen_label!r} -> tokens {chosen.tokens}")
-    return chosen.tokens
+    return Pick("tokens", chosen.tokens)
 
 
 def apply_pick(
@@ -402,17 +747,29 @@ def apply_pick(
     return new_selected, new_query
 
 
-def refine(initial_query: str, search: SearchConfig) -> tuple[str, list[Item]]:
-    """Return (final_query, list of Items) after interactive refinement."""
+def add_exclude_to_query(query: str, term: str) -> str:
+    """Append nyaa-style -tag to query. Returns query unchanged if term is empty after stripping."""
+    term = term.lstrip("-").strip()
+    if not term:
+        return query
+    flag = f'-"{term}"' if " " in term else f"-{term}"
+    return f"{query} {flag}"
+
+
+def add_term_to_query(query: str, term: str) -> str:
+    """Append a positive search term to query, quoting if it contains spaces."""
+    term = term.strip()
+    if not term:
+        return query
+    flag = f'"{term}"' if " " in term else term
+    return f"{query} {flag}"
+
+
+def refine(initial_query: str, items: list[Item], search: SearchConfig) -> tuple[str, list[Item]]:
+    """Return (final_query, list of Items) after interactive refinement on the
+    already-fetched `items` (caller is responsible for ensuring it's non-empty)."""
     query = initial_query.strip()
-    log("INFO", f"refine start: {query!r}")
-
-    print(f"{C_BLD}Query:{C_OFF} {query}")
-    print(f"{C_DIM}fetching nyaa.si...{C_OFF}")
-    items = fetch_items(query, search)
-    if not items:
-        die("no results for that query")
-
+    log("INFO", f"refine start: {query!r} ({len(items)} items)")
     query, selected = auto_resolution(query, items)
 
     while True:
@@ -420,24 +777,65 @@ def refine(initial_query: str, search: SearchConfig) -> tuple[str, list[Item]]:
         print()
         print(f"{C_BLD}Query:{C_OFF} {query}")
         print(f"{C_BLD}{count} result(s):{C_OFF}")
-        show_titles([item.title for item in selected])
+        show_titles(selected)
 
         if count <= 1:
             break
 
         groups = compute_groups(selected)
         if not groups:
-            print(f"{C_DIM}(no further refinements available){C_OFF}")
-            break
+            print(f"{C_DIM}(no token refinements left — exclude a term or finalize){C_OFF}")
 
-        tokens = pick_group(groups, count)
-        if tokens is None:
+        pick = pick_group(groups, selected)
+        if pick.kind == "done":
             break
+        if pick.kind == "show_all":
+            view_all_titles(selected)
+            continue
+        if pick.kind == "custom":
+            term = pick.tokens[0]
+            term_lc = term.lower()
+            hits = sum(1 for item in selected if term_lc in item.title.lower())
+            if hits == 0:
+                print(f"{C_YEL}no titles contain {term!r} — ignored{C_OFF}")
+                log("WARN", f"custom filter {term!r}: 0 substring matches in current results")
+                continue
+            new_query = add_term_to_query(query, term)
+            print(f"{C_DIM}refetching nyaa with {new_query!r}...{C_OFF}")
+            new_items = fetch_items(new_query, search)
+            if not new_items:
+                print(f"{C_YEL}filter would yield 0 results — skipped{C_OFF}")
+                log("WARN", f"after custom {term!r}: 0 results — reverted")
+                continue
+            removed = len(selected) - len(new_items)
+            print(f"{C_YEL}filtered — nyaa returned {len(new_items)} (was {len(selected)}, "
+                  f"{removed:+d}){C_OFF}")
+            query, selected = new_query, new_items
+            log("INFO", f"after custom {term!r}: {len(selected)} results, query={query!r}")
+            continue
+        if pick.kind == "exclude":
+            term = prompt("Exclude term: ", history="exclude")
+            new_query = add_exclude_to_query(query, term)
+            if new_query == query:
+                print(f"{C_DIM}empty — skipped{C_OFF}")
+                continue
+            print(f"{C_DIM}refetching nyaa with {new_query!r}...{C_OFF}")
+            new_items = fetch_items(new_query, search)
+            if not new_items:
+                print(f"{C_YEL}exclude would yield 0 results — skipped{C_OFF}")
+                log("WARN", f"after exclude {term!r}: 0 results — reverted")
+                continue
+            removed = len(selected) - len(new_items)
+            print(f"{C_YEL}excluded — nyaa returned {len(new_items)} (was {len(selected)}, "
+                  f"{removed:+d}){C_OFF}")
+            query, selected = new_query, new_items
+            log("INFO", f"after exclude {term!r}: {len(selected)} results, query={query!r}")
+            continue
 
-        result = apply_pick(selected, query, tokens)
+        result = apply_pick(selected, query, pick.tokens)
         if result is None:
             print(f"{C_YEL}filter would yield 0 results — skipped{C_OFF}")
-            log("WARN", f"tokens {tokens!r} would yield 0 — skipped")
+            log("WARN", f"tokens {pick.tokens!r} would yield 0 — skipped")
             continue
         selected, query = result
         log("INFO", f"after pick: {len(selected)} results, query={query!r}")
@@ -522,7 +920,9 @@ def apply_no_seed(qbt_cfg: QbtConfig) -> None:
 
 # -------- main flow helpers --------
 
-ACT_SUB, ACT_DL, ACT_MOVIE, ACT_CANCEL = "subscribe", "download", "movie", "cancel"
+ACT_SUB, ACT_DL_PICK, ACT_DL_ALL, ACT_MOVIE, ACT_CANCEL = (
+    "subscribe", "download_pick", "download_all", "movie", "cancel",
+)
 
 
 def looks_like_url(s: str) -> bool:
@@ -534,37 +934,192 @@ def is_one_shot_url(s: str) -> bool:
 
 
 def pick_action(n_items: int) -> str:
-    table = [
-        ("subscribe to this query as a recurring feed", ACT_SUB),
-        (f"download {n_items} matching item(s) now",    ACT_DL),
-        ("download as movie (pick one from the list)",  ACT_MOVIE),
-        ("cancel",                                      ACT_CANCEL),
+    rows: list[tuple[str, str, str, str]] = [
+        (C_CYN, " Subscribe", "recurring RSS feed",                ACT_SUB),
+        (C_GRN, " Download",     "pick which items to download",          ACT_DL_PICK),
+        (C_GRN, " Download All", f"all {n_items} matching item(s) now",   ACT_DL_ALL),
+        (C_MAG, " Movie",     "pick one from the list",            ACT_MOVIE),
+        (C_RED, " Cancel",    "",                                  ACT_CANCEL),
     ]
-    choice = fzf_pick_one([label for label, _ in table], "action?")
-    return next((act for label, act in table if label == choice), ACT_CANCEL)
+    name_w = max(len(name) for _, name, _, _ in rows) + 2
+    labels: list[str] = []
+    by_key: dict[str, str] = {}
+    for color, name, desc, act in rows:
+        text = f"{color}{name:<{name_w}}{C_OFF}"
+        if desc:
+            text += f"{C_DIM}— {desc}{C_OFF}"
+        labels.append(text)
+        by_key[ansi_strip(text).strip()] = act
+    choice = fzf_pick_one(labels, f"{C_BLD}Choose an action{C_OFF}")
+    if choice is None:
+        return ACT_CANCEL
+    return by_key.get(ansi_strip(choice).strip(), ACT_CANCEL)
+
+
+def pick_downloads(items: list[Item]) -> list[Item]:
+    """Multi-select picker. Tab/Space/Enter mark a row and step down. Picking
+    the [Done] row at the top accepts the marks. Esc cancels.
+
+    Implementation: each row is `<key>\\t<body>` with key = "DONE" or "ITM".
+    fzf hides field 1 (`--with-nth 2..`) and only matches against field 2+
+    (`--nth 2..`). Enter is bound via `transform` to dispatch on field 1:
+      * field 1 is DONE → emit `accept`
+      * otherwise       → emit `toggle+down`
+    """
+    if not shutil.which("fzf") or not items:
+        return []
+    width = max(40, shutil.get_terminal_size((120, 24)).columns - 3)
+    sorted_items = sorted(items, key=lambda i: i.downloads, reverse=True)
+
+    sentinel = f"DONE\t  {C_GRN}{C_BLD}[Done — confirm selection]{C_OFF}"
+    lines: list[str] = [sentinel]
+    by_key: dict[str, Item] = {}
+    for item in sorted_items:
+        body = f"{format_stats(item)}  {colorize_title(item.title)}"
+        if item.category:
+            body = right_anchor(body, category_chip(item), width)
+        line = f"ITM\t{body}"
+        lines.append(line)
+        by_key[ansi_strip(line).strip()] = item
+
+    header = (
+        f"{len(items)} item(s) — "
+        f"{C_YEL}{C_BLD}Tab/Space/Enter{C_OFF} marks · "
+        f"go to {C_GRN}{C_BLD}Done{C_OFF} to confirm · "
+        f"{C_DIM}Esc cancels{C_OFF}"
+    )
+    binds = FZF_BINDS + (
+        ",tab:toggle+down,space:toggle+down,"
+        "enter:transform:[ {1} = DONE ] && echo accept || echo toggle+down"
+    )
+    args = [
+        "fzf",
+        "--ansi",
+        "--multi",
+        "--color", FZF_HL_COLORS,
+        "--delimiter", "\t",
+        "--with-nth", "2..",
+        "--nth", "2..",
+        "--bind", binds,
+        "--prompt", "select > ",
+        "--header", header,
+        "--marker", "▌",
+        "--info", "inline",
+        "--layout=reverse",
+        "--height", "80%",
+        "--cycle",
+        "--preview-window=hidden",
+    ]
+    proc = subprocess.run(
+        args, input="\n".join(lines), text=True, stdout=subprocess.PIPE
+    )
+    if proc.returncode != 0:
+        return []
+    out: list[Item] = []
+    for raw in (proc.stdout or "").splitlines():
+        item = by_key.get(ansi_strip(raw).strip())
+        if item is not None:
+            out.append(item)
+    return out
 
 
 def pick_movie(items: list[Item]) -> Item | None:
-    titles = [item.title for item in items]
-    pick = fzf_pick_one(titles, f"pick one of {len(items)} item(s) to save as a movie")
+    width = max(40, shutil.get_terminal_size((120, 24)).columns - 3)
+    sorted_items = sorted(items, key=lambda i: i.downloads, reverse=True)
+    lines: list[str] = []
+    by_key: dict[str, Item] = {}
+    for item in sorted_items:
+        line = f"{format_stats(item)}  {colorize_title(item.title)}"
+        if item.category:
+            line = right_anchor(line, category_chip(item), width)
+        lines.append(line)
+        by_key[ansi_strip(line).strip()] = item
+    pick = fzf_pick_one(lines, f"pick one of {len(items)} item(s) to save as a movie")
     if pick is None:
         return None
-    for item in items:
-        if item.title == pick:
-            return item
-    return None
+    return by_key.get(ansi_strip(pick).strip())
 
 
-def prompt(label: str) -> str:
+HISTORY_LIMIT = 1000
+
+
+def _history_path(key: str) -> Path:
+    return Path(f"~/.local/state/anirss/{key}.history").expanduser()
+
+
+def setup_readline() -> None:
+    """Enable line editing on input() prompts: arrows, Ctrl-w, and especially
+    Alt-Backspace (Option+Delete on macOS) for backward-kill-word.
+
+    History is loaded/saved per-prompt by `prompt()` itself (each prompt type
+    has its own file), so editing a recalled Search query never leaks into
+    Name or Exclude history and vice versa.
+    """
     try:
-        return input(label).strip()
+        import readline
+    except ImportError:
+        return
+    libedit = "libedit" in (readline.__doc__ or "")
+    if libedit:
+        # macOS default Python links libedit, which has a different config syntax.
+        binds = [r'bind "\e\x7f" ed-delete-prev-word',
+                 r'bind "\e\b"   ed-delete-prev-word']
+    else:
+        binds = [r'"\e\x7f": backward-kill-word',
+                 r'"\e\b":   backward-kill-word']
+    for b in binds:
+        try:
+            readline.parse_and_bind(b)
+        except Exception:
+            pass
+    readline.set_history_length(HISTORY_LIMIT)
+
+
+def prompt(label: str, *, history: str | None = None) -> str:
+    """input() with line editing. If `history` is set, Up/Down recall entries
+    from `~/.local/state/anirss/<history>.history` only — no cross-pollination
+    between Search / Name / Exclude prompts.
+    """
+    try:
+        import readline as rl
+    except ImportError:
+        rl = None  # type: ignore[assignment]
+
+    history_file = _history_path(history) if history else None
+    saved: list[str] = []
+    if rl is not None and history_file is not None:
+        # Save in-memory history so this prompt's entries don't leak to the next.
+        n = rl.get_current_history_length()
+        saved = [rl.get_history_item(i + 1) or "" for i in range(n)]
+        rl.clear_history()
+        try:
+            history_file.parent.mkdir(parents=True, exist_ok=True)
+            if history_file.exists():
+                rl.read_history_file(str(history_file))
+        except OSError as e:
+            log("WARN", f"history read {history_file}: {e}")
+
+    try:
+        result = input(label).strip()
     except (EOFError, KeyboardInterrupt):
         die("cancelled")
+
+    if rl is not None and history_file is not None:
+        try:
+            rl.write_history_file(str(history_file))
+        except OSError as e:
+            log("WARN", f"history write {history_file}: {e}")
+        rl.clear_history()
+        for entry in saved:
+            if entry:
+                rl.add_history(entry)
+
+    return result
 
 
 def get_name(default_name: str | None) -> str:
     label = f"Name [{default_name}]: " if default_name else "Name: "
-    name = prompt(label)
+    name = prompt(label, history="name")
     if not name and default_name:
         name = default_name
     if not name:
@@ -622,6 +1177,9 @@ def do_movie(qbt: QbtSession, title: str, link: str, movie_path: str) -> None:
 def main() -> None:
     cfg = load_config()
     init_log(cfg["logging"]["log_path"])
+    global _SHOW_LEECHERS
+    _SHOW_LEECHERS = bool(cfg["display"]["show_leechers"])
+    setup_readline()
     log("INFO", f"=== anirss invoked: argv={sys.argv[1:]} ===")
     args = sys.argv[1:]
 
@@ -634,6 +1192,9 @@ def main() -> None:
     if args and args[0] == "--config":
         print(f"config path: {CONFIG_PATH}")
         print(json.dumps(cfg, indent=2))
+        return
+    if args and args[0] == "--migrate-config":
+        migrate_config()
         return
 
     arg = " ".join(args).strip()
@@ -650,12 +1211,23 @@ def main() -> None:
             feed_url = arg
             print(f"{C_BLD}Feed URL:{C_OFF} {arg}")
     else:
-        if not arg:
-            arg = prompt("Search: ")
-        if not arg:
-            die("empty search")
+        items: list[Item] = []
+        while True:
+            if not arg:
+                arg = prompt("Search: ", history="search")
+            if not arg:
+                print(f"{C_DIM}(empty — type something or Ctrl-C to quit){C_OFF}")
+                continue
+            print(f"{C_BLD}Query:{C_OFF} {arg}")
+            print(f"{C_DIM}fetching nyaa.si...{C_OFF}")
+            items = fetch_items(arg, cfg["search"])
+            if items:
+                break
+            print(f"{C_YEL}no results for {arg!r} — edit and try again "
+                  f"({C_DIM}↑ recalls last query{C_OFF}{C_YEL}){C_OFF}")
+            arg = ""
         default_name = arg
-        query, items = refine(arg, cfg["search"])
+        query, items = refine(arg, items, cfg["search"])
         if items:
             default_name = show_name(items[0].title) or default_name
         action = pick_action(len(items))
@@ -666,9 +1238,17 @@ def main() -> None:
         if action == ACT_SUB:
             feed_url = search_url(query, cfg["search"])
             print(f"{C_GRN}RSS URL:{C_OFF} {feed_url}")
-        elif action == ACT_DL:
+        elif action == ACT_DL_ALL:
             download_links = [item.link for item in items]
-            print(f"{C_GRN}downloading {len(download_links)} item(s){C_OFF}")
+            print(f"{C_GRN}downloading all {len(download_links)} item(s){C_OFF}")
+        elif action == ACT_DL_PICK:
+            chosen = pick_downloads(items)
+            if not chosen:
+                print(f"{C_DIM}cancelled.{C_OFF}")
+                return
+            download_links = [item.link for item in chosen]
+            default_name = show_name(chosen[0].title) or default_name
+            print(f"{C_GRN}downloading {len(download_links)} selected item(s){C_OFF}")
         else:  # ACT_MOVIE
             movie_choice = pick_movie(items)
             if movie_choice is None:

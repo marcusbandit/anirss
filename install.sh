@@ -96,3 +96,4 @@ fi
 
 echo
 ok "done. Try: anirss --help"
+echo "       After future git pulls: ./update.sh  (refreshes binary + migrates config)"
