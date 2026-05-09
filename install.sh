@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
-# install.sh — install anirss into ~/.local/bin and seed a default config.
+# install.sh — install or update anirss. Safe to re-run.
+#
+# - First run:  installs deps reminder, drops the binary in ~/.local/bin,
+#               seeds a default config at ~/.config/anirss/config.toml.
+# - Re-run:     pulls latest (if a clean git checkout), refreshes the binary,
+#               appends any new default config sections via --migrate-config.
 #
 # Usage:
-#     ./install.sh              # install to ~/.local/bin
+#     ./install.sh                     # install/update to ~/.local/bin
 #     PREFIX=/usr/local ./install.sh   # install to /usr/local/bin (may need sudo)
 
 set -euo pipefail
@@ -10,6 +15,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="${PREFIX:-$HOME/.local/bin}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/anirss"
+TARGET="$BIN_DIR/anirss"
 
 red()  { printf '\033[31m%s\033[0m' "$1"; }
 yel()  { printf '\033[33m%s\033[0m' "$1"; }
@@ -18,6 +24,15 @@ grn()  { printf '\033[32m%s\033[0m' "$1"; }
 err()  { echo "$(red "ERROR:") $1" >&2; exit 1; }
 warn() { echo "$(yel "WARN:")  $1" >&2; }
 ok()   { echo "$(grn "OK:")    $1"; }
+
+# --- pull latest, but only if this is a clean git checkout ---
+if [ -d "$REPO_DIR/.git" ]; then
+    if git -C "$REPO_DIR" diff --quiet && git -C "$REPO_DIR" diff --cached --quiet; then
+        git -C "$REPO_DIR" pull --ff-only && ok "pulled latest"
+    else
+        warn "uncommitted changes in $REPO_DIR — skipping git pull"
+    fi
+fi
 
 # --- dependency checks ---
 command -v python3 >/dev/null 2>&1 || err "python3 not found"
@@ -50,26 +65,17 @@ fi
 
 [ -f "$REPO_DIR/anirss" ] || err "anirss script not found at $REPO_DIR/anirss"
 
-# --- existing install check ---
-TARGET="$BIN_DIR/anirss"
-if [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
-    if [ -L "$TARGET" ]; then
-        existing="symlink -> $(readlink "$TARGET")"
-    else
-        existing="file"
-    fi
-    echo "anirss is already installed at $TARGET ($existing)"
-    read -r -p "Reinstall? [y/N] " reply
-    case "$reply" in
-        [yY]|[yY][eE][sS]) ;;
-        *) ok "skipped — existing install left in place"; exit 0 ;;
-    esac
-fi
-
-# --- install ---
+# --- install or refresh the binary ---
 mkdir -p "$BIN_DIR"
-install -m 755 "$REPO_DIR/anirss" "$BIN_DIR/anirss"
-ok "installed $BIN_DIR/anirss"
+if [ -L "$TARGET" ] && [ "$(readlink -f "$TARGET" 2>/dev/null)" = "$REPO_DIR/anirss" ]; then
+    ok "symlink at $TARGET — picks up changes automatically"
+elif [ -e "$TARGET" ]; then
+    install -m 755 "$REPO_DIR/anirss" "$TARGET"
+    ok "refreshed $TARGET"
+else
+    install -m 755 "$REPO_DIR/anirss" "$TARGET"
+    ok "installed $TARGET"
+fi
 
 # --- PATH check ---
 case ":$PATH:" in
@@ -80,20 +86,22 @@ case ":$PATH:" in
         ;;
 esac
 
-# --- config bootstrap ---
+# --- config: bootstrap on first install, migrate on updates ---
 mkdir -p "$CONFIG_DIR"
-# Running anirss with --config triggers default-config creation when missing.
-"$BIN_DIR/anirss" --config >/dev/null 2>&1 || true
-
-if [ -f "$CONFIG_DIR/config.toml" ]; then
-    ok "config at $CONFIG_DIR/config.toml"
-    echo
-    echo "Edit it to match your setup:"
-    echo "  • [qbittorrent]   url, username  — your qBittorrent WebUI"
-    echo "  • [downloads]     save_base      — where series/bulk downloads go"
-    echo "  • [downloads]     movie_path     — where movies go (single files, no subdir)"
+if [ ! -f "$CONFIG_DIR/config.toml" ]; then
+    # Running anirss with --config triggers default-config creation when missing.
+    "$TARGET" --config >/dev/null 2>&1 || true
+    if [ -f "$CONFIG_DIR/config.toml" ]; then
+        ok "config at $CONFIG_DIR/config.toml"
+        echo
+        echo "Edit it to match your setup:"
+        echo "  • [qbittorrent]   url, username  — your qBittorrent WebUI"
+        echo "  • [downloads]     save_base      — where series/bulk downloads go"
+        echo "  • [downloads]     movie_path     — where movies go (single files, no subdir)"
+    fi
+else
+    "$TARGET" --migrate-config
 fi
 
 echo
 ok "done. Try: anirss --help"
-echo "       After future git pulls: ./update.sh  (refreshes binary + migrates config)"

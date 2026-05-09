@@ -40,4 +40,6 @@ cd anirss
 ./install.sh           # installs to ~/.local/bin
 ```
 
-After install, run `anirss --config` once to seed `~/.config/anirss/config.toml`, then edit it to point at your qBittorrent WebUI.
+`./install.sh` is idempotent — re-run it any time to pull, refresh the binary, and append any new default config sections. (No separate update script.)
+
+After the first install, edit `~/.config/anirss/config.toml` to point at your qBittorrent WebUI.
