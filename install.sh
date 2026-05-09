@@ -87,16 +87,35 @@ case ":$PATH:" in
 esac
 
 # --- shell completions (best-effort, user-level) ---
+# zsh: pick a directory that's already on $fpath whenever possible so completions
+# work without the user editing their .zshrc. Order of preference:
+#   1. $ZSH_CUSTOM/completions (Oh My Zsh users)
+#   2. ~/.oh-my-zsh/custom/completions (Oh My Zsh default)
+#   3. ~/.zfunc (a common manual setup; on fpath if user wired it up)
+#   4. $XDG_DATA_HOME/zsh/site-functions (fallback; needs fpath edit)
+needs_fpath_edit=""
 if [ -f "$REPO_DIR/completions/_anirss" ]; then
-    zsh_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions"
+    if [ -n "${ZSH_CUSTOM:-}" ] && [ -d "$ZSH_CUSTOM" ]; then
+        zsh_dir="$ZSH_CUSTOM/completions"
+    elif [ -d "$HOME/.oh-my-zsh/custom" ]; then
+        zsh_dir="$HOME/.oh-my-zsh/custom/completions"
+    elif [ -d "$HOME/.zfunc" ]; then
+        zsh_dir="$HOME/.zfunc"
+    else
+        zsh_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions"
+        needs_fpath_edit=1
+    fi
     mkdir -p "$zsh_dir"
     install -m 644 "$REPO_DIR/completions/_anirss" "$zsh_dir/_anirss"
     ok "zsh completion -> $zsh_dir/_anirss"
-    case ":${fpath[*]:-}:" in
-        *":$zsh_dir:"*) ;;
-        *) warn "$zsh_dir is not on \$fpath. Add to ~/.zshrc (before \`compinit\`):"
-           echo "         fpath=($zsh_dir \$fpath)" ;;
-    esac
+    if [ -n "$needs_fpath_edit" ]; then
+        warn "$zsh_dir is not on a default \$fpath. Add to ~/.zshrc (before 'compinit'):"
+        echo "         fpath=(\"$zsh_dir\" \$fpath)"
+    fi
+    # zsh caches completion lookups in .zcompdump; nudge the user to refresh.
+    if ls "$HOME"/.zcompdump* >/dev/null 2>&1; then
+        echo "         to use immediately: rm -f ~/.zcompdump*; exec zsh"
+    fi
 fi
 if [ -f "$REPO_DIR/completions/anirss.bash" ]; then
     bash_dir="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"

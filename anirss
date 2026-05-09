@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 
 # -------- ANSI --------
@@ -71,6 +71,11 @@ FZF_BINDS = (
     "alt-bs:backward-kill-word,"
     "ctrl-w:backward-kill-word"
 )
+
+# Colored breadcrumb prompts. fzf 0.45+ renders ANSI escapes inside --prompt.
+PROMPT_SEARCH = f"{C_YEL}Search >{C_OFF} "
+PROMPT_FILTER = f"{C_YEL}Search >{C_OFF} {C_BLU}Filter >{C_OFF} "
+PROMPT_ACTION = f"{C_YEL}Search >{C_OFF} {C_BLU}Filter >{C_OFF} {C_GRN}Action >{C_OFF} "
 
 # Set from cfg in main(); guards leechers in format_stats. Default True is only
 # relevant if format_stats is called before main() (none currently does).
@@ -260,6 +265,17 @@ def die(msg: str) -> NoReturn:
     sys.exit(1)
 
 
+def _check_fzf_ctrlc(stdout: str, expect_idx: int = 0) -> None:
+    """If fzf was started with `--expect ctrl-c`, the expect-key appears at
+    line `expect_idx` (0 by default; 1 when --print-query is also set).
+    A literal "ctrl-c" there means the user pressed Ctrl-C — terminate now.
+    """
+    lines = (stdout or "").split("\n")
+    if expect_idx < len(lines) and lines[expect_idx].strip() == "ctrl-c":
+        log("INFO", "ctrl-c — terminating")
+        sys.exit(130)
+
+
 # -------- shared types --------
 
 class Item(NamedTuple):
@@ -412,6 +428,7 @@ def fzf_pick_one(
         "--cycle",
         "--no-info",
         "--preview-window=hidden",
+        "--expect", "ctrl-c",
     ]
     proc = subprocess.run(
         args,
@@ -419,9 +436,14 @@ def fzf_pick_one(
         text=True,
         stdout=subprocess.PIPE,
     )
+    out = proc.stdout or ""
+    _check_fzf_ctrlc(out)
     if proc.returncode != 0:
         return None
-    line = (proc.stdout or "").strip()
+    # With --expect, line 0 is the expect-key (empty when none) and line 1+ is
+    # the matched item.
+    lines = out.split("\n")
+    line = lines[1].strip() if len(lines) >= 2 else ""
     return line or None
 
 
@@ -442,7 +464,7 @@ def fzf_pick_with_query(
         "--ansi",
         "--color", FZF_HL_COLORS,
         "--bind", FZF_BINDS,
-        "--prompt", "Search > Filter > ",
+        "--prompt", PROMPT_FILTER,
         "--header", header,
         "--layout=reverse",
         "--height", "60%",
@@ -450,6 +472,7 @@ def fzf_pick_with_query(
         "--no-info",
         "--print-query",
         "--preview-window=hidden",
+        "--expect", "ctrl-c",
     ]
     proc = subprocess.run(
         args,
@@ -458,22 +481,26 @@ def fzf_pick_with_query(
         stdout=subprocess.PIPE,
     )
     out = proc.stdout or ""
+    # With --print-query, line 0 = query; with --expect, line 1 = expect-key.
+    _check_fzf_ctrlc(out, expect_idx=1)
     lines = out.split("\n")
     query = lines[0].strip() if lines else ""
     if proc.returncode == 0:
-        choice = lines[1].strip() if len(lines) >= 2 else ""
+        choice = lines[2].strip() if len(lines) >= 3 else ""
         return query, (choice or None), False
     if proc.returncode == 1:
         # Enter pressed with no match — treat query as a custom filter.
         return query, None, False
-    # 130 = esc/ctrl-c, anything else is treated as cancel.
+    # 130 = esc, anything else is treated as cancel.
     return "", None, True
 
 
 def fzf_search_prompt(prompt_label: str, *, default: str = "") -> str | None:
-    """fzf-style query input. Returns the typed string (possibly empty) on
-    Enter, or None on Esc/Ctrl-C. Persistent history lives in the standard
-    `search` history file, navigable with Up/Down inside the prompt.
+    """Live nyaa search via fzf. Returns the typed query on Enter, None on Esc.
+    Ctrl-C terminates the entire process. Items refresh ~1 s after typing
+    pauses, driven by the hidden `--_search-rss` self-invocation. The user's
+    `FZF_DEFAULT_OPTS --preview ...` is overridden by `--preview-window=hidden`
+    so no preview pane is drawn.
     """
     history_file = _history_path("search")
     try:
@@ -483,67 +510,132 @@ def fzf_search_prompt(prompt_label: str, *, default: str = "") -> str | None:
 
     if not shutil.which("fzf"):
         # Fallback: readline prompt. die() exits on Ctrl-C/EOF, matching
-        # "Esc on search → quit".
-        return prompt(prompt_label, history="search") or ""
+        # "Ctrl-C kills".
+        return prompt(prompt_label, history="search") or None
 
-    args = [
+    import shlex
+    script_path = shutil.which(sys.argv[0]) or os.path.abspath(sys.argv[0])
+    quoted = shlex.quote(script_path)
+    # `sleep 1` debounces: fzf cancels in-flight reloads on every keystroke,
+    # so the actual fetch only runs once typing pauses for ~1s.
+    search_cmd = f"sleep 1 && {quoted} --_search-rss {{q}}"
+    initial_cmd = f"{quoted} --_search-rss {{q}}"
+
+    fzf_args = [
         "fzf",
         "--ansi",
+        "--disabled",  # let nyaa do the filtering; fzf only renders.
         "--color", FZF_HL_COLORS,
         "--prompt", prompt_label,
         "--query", default,
         "--layout=reverse",
-        "--height", "5",
+        "--height", "90%",
         "--no-info",
-        "--header", "type a search query · Enter to search · Esc to quit",
-        "--bind", FZF_BINDS + ",enter:print-query,up:prev-history,down:next-history",
+        "--preview-window=hidden",
+        "--header",
+        f"type to search nyaa · ~1s after pause results refresh · "
+        f"{C_BLD}Enter{C_OFF} confirms · {C_BLD}Esc{C_OFF} back · {C_BLD}Ctrl-C{C_OFF} quit",
+        "--expect", "ctrl-c",
         "--history", str(history_file),
+        "--bind", FZF_BINDS,
+        "--bind", "enter:print-query+abort",
+        "--bind", f"change:reload({search_cmd})",
     ]
-    proc = subprocess.run(args, input="", text=True, stdout=subprocess.PIPE)
-    if proc.returncode != 0:
+    if default:
+        fzf_args.extend(["--bind", f"start:reload({initial_cmd})"])
+
+    proc = subprocess.run(fzf_args, input="", text=True, stdout=subprocess.PIPE)
+    out = proc.stdout or ""
+    lines = out.split("\n")
+    first = lines[0].strip() if lines else ""
+
+    # Ctrl-C with --expect: returncode 0 (or 1), first line is "ctrl-c". We
+    # exit Python entirely here rather than going through _check_fzf_ctrlc
+    # because there is no --print-query offset to worry about.
+    if proc.returncode in (0, 1) and first == "ctrl-c":
+        log("INFO", "ctrl-c at search prompt — terminating")
+        sys.exit(130)
+
+    if proc.returncode == 130:
+        # Either Enter (`enter:print-query+abort` printed the query then aborted)
+        # or Esc (no output). Distinguish by output content.
+        if first:
+            try:
+                with history_file.open("a") as f:
+                    f.write(first + "\n")
+            except OSError:
+                pass
+            return first
         return None
-    return (proc.stdout or "").strip()
+
+    return None
 
 
 def view_all_titles(items: list[Item]) -> None:
-    """Read-only fzf viewer over `items`. Esc or Enter returns to caller."""
+    """Read-only fzf viewer over `items`. Each row is multi-line: stats and
+    category stay anchored on the first line, and the title wraps onto
+    subsequent lines indented under itself instead of being truncated. Esc or
+    Enter returns to the caller; Ctrl-C terminates the whole process.
+    """
     if not shutil.which("fzf") or not items:
         return
+    import textwrap
     width = max(40, shutil.get_terminal_size((120, 24)).columns - 3)
-    lines = [
-        right_anchor(
-            f"{format_stats(item)}  {colorize_title(item.title)}",
-            category_chip(item),
-            width,
-        ) if item.category else
-        f"{format_stats(item)}  {colorize_title(item.title)}"
-        for item in items
-    ]
+
+    # Compute alignment widths. format_stats colors its content; measure on the
+    # plain (ANSI-stripped) form so wrapping matches what the eye will see.
+    stats_w = max(len(ansi_strip(format_stats(it))) for it in items)
+    cat_w = max((len(it.category) for it in items if it.category), default=0)
+    cat_pad = (cat_w + 2) if cat_w else 0  # gap before category chip
+    prefix_w = stats_w + 2  # "  " between stats and title
+    name_w = max(20, width - prefix_w - cat_pad)
+
+    blocks: list[str] = []
+    for item in items:
+        chunks = textwrap.wrap(item.title, width=name_w) or [""]
+        first_chunk = colorize_title(chunks[0])
+        first_body = f"{format_stats(item)}  {first_chunk}"
+        first_line = (
+            right_anchor(first_body, category_chip(item), width)
+            if item.category else first_body
+        )
+        block_lines = [first_line]
+        indent = " " * prefix_w
+        for chunk in chunks[1:]:
+            block_lines.append(f"{indent}{chunk}")
+        blocks.append("\n".join(block_lines))
+
     args = [
         "fzf",
         "--ansi",
+        "--read0",
+        "--multi-line",
         "--color", FZF_HL_COLORS,
         "--bind", FZF_BINDS,
         "--prompt", "view > ",
-        "--header", f"all {len(items)} titles · esc/enter to return",
+        "--header",
+        f"all {len(items)} titles · {C_BLD}Esc/Enter{C_OFF} to return · "
+        f"{C_BLD}Ctrl-C{C_OFF} quits",
         "--layout=reverse",
         "--height", "90%",
         "--cycle",
         "--no-info",
         "--preview-window=hidden",
+        "--expect", "ctrl-c",
     ]
-    subprocess.run(
+    proc = subprocess.run(
         args,
-        input="\n".join(lines),
+        input="\0".join(blocks) + "\0",
         text=True,
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
     )
+    _check_fzf_ctrlc(proc.stdout or "")
 
 
 # -------- search/refine --------
 
-DONE = "[done — finalize this query]"
-EXCLUDE = "[- exclude term...]"
+DONE = "[→ CONTINUE TO ACTIONS]"
+EXCLUDE = "[✗ EXCLUDE TERM…]"
 
 
 class Pick(NamedTuple):
@@ -748,7 +840,7 @@ def pick_group(groups: list[Group], selected: list[Item]) -> Pick:
     caller can decide whether to fold the text into the nyaa query.
     """
     n_results = len(selected)
-    show_all_label = f"[show all {n_results} titles]"
+    show_all_label = f"[≡ SHOW ALL {n_results} TITLES]"
     label_width = 28
     options = [
         f"{colorize_picker_label(g.label, label_width)} {C_DIM}({g.member_count}){C_OFF}"
@@ -761,7 +853,8 @@ def pick_group(groups: list[Group], selected: list[Item]) -> Pick:
     ]
     header = (
         f"{n_results} results — pick a token, type to filter "
-        f"(adds to query if no match) · [done] to finalize · esc → back to search"
+        f"(adds to query if no match) · {C_BLD}Esc{C_OFF} → back to search · "
+        f"{C_BLD}Ctrl-C{C_OFF} quits"
     )
 
     query, choice, cancelled = fzf_pick_with_query(options, header)
@@ -1225,8 +1318,11 @@ def pick_action(n_items: int) -> str:
             text += f"{C_DIM}— {desc}{C_OFF}"
         labels.append(text)
         by_key[ansi_strip(text).strip()] = act
-    header = f"{C_BLD}Choose an action{C_OFF} · esc → back to filter"
-    choice = fzf_pick_one(labels, header, prompt_label="Search > Filter > Action > ")
+    header = (
+        f"{C_BLD}Choose an action{C_OFF} · {C_BLD}Esc{C_OFF} → back to filter · "
+        f"{C_BLD}Ctrl-C{C_OFF} quits"
+    )
+    choice = fzf_pick_one(labels, header, prompt_label=PROMPT_ACTION)
     if choice is None:
         return ACT_BACK
     return by_key.get(ansi_strip(choice).strip(), ACT_CANCEL)
@@ -1285,14 +1381,19 @@ def pick_downloads(items: list[Item]) -> list[Item]:
         "--height", "80%",
         "--cycle",
         "--preview-window=hidden",
+        "--expect", "ctrl-c",
     ]
     proc = subprocess.run(
         args, input="\n".join(lines), text=True, stdout=subprocess.PIPE
     )
+    out_str = proc.stdout or ""
+    _check_fzf_ctrlc(out_str)
     if proc.returncode != 0:
         return []
     out: list[Item] = []
-    for raw in (proc.stdout or "").splitlines():
+    # With --expect, line 0 is the expect-key (empty here on Enter); selected
+    # rows follow on subsequent lines.
+    for raw in out_str.splitlines()[1:]:
         item = by_key.get(ansi_strip(raw).strip())
         if item is not None:
             out.append(item)
@@ -1513,7 +1614,7 @@ def cmd_query(qbt_cfg: QbtConfig, json_format: bool) -> None:
     rules = qbt.get_json("/api/v2/rss/rules") or {}
     if not isinstance(rules, dict):
         rules = {}
-    info = qbt.get_json("/api/v2/torrents/info") if json_format else None
+    info = qbt.get_json("/api/v2/torrents/info")
 
     # Always refresh the cache as a side effect of -Q.
     write_feed_cache(list(rules.keys()))
@@ -1525,16 +1626,20 @@ def cmd_query(qbt_cfg: QbtConfig, json_format: bool) -> None:
             print(f"{C_DIM}(no feeds subscribed){C_OFF}")
         return
 
+    # Pre-count torrents per save_path so each lookup is O(1).
+    counts: dict[str, int] = {}
+    if isinstance(info, list):
+        for t in info:
+            if isinstance(t, dict):
+                sp = _norm_path(t.get("save_path", ""))
+                counts[sp] = counts.get(sp, 0) + 1
+
     if json_format:
         out: list[dict] = []
         for name, rule in sorted(rules.items(), key=lambda kv: kv[0].lower()):
             feeds = rule.get("affectedFeeds") or []
             save_path = rule.get("savePath") or ""
-            torrent_count = (
-                sum(1 for t in info if isinstance(t, dict)
-                    and _norm_path(t.get("save_path", "")) == _norm_path(save_path))
-                if isinstance(info, list) else 0
-            )
+            torrent_count = counts.get(_norm_path(save_path), 0)
             out.append({
                 "name": name,
                 "feed_url": feeds[0] if feeds else "",
@@ -1545,11 +1650,13 @@ def cmd_query(qbt_cfg: QbtConfig, json_format: bool) -> None:
         print(json.dumps(out, indent=2))
         return
 
-    # Plain output: aligned name + savepath.
-    name_w = max(len(name) for name in rules)
+    # Two-line tree-style output: name + count, then save_path under a `└─` prefix.
     for name in sorted(rules, key=str.lower):
         save_path = rules[name].get("savePath") or ""
-        print(f"{name:<{name_w}}  {C_DIM}{save_path}{C_OFF}")
+        n = counts.get(_norm_path(save_path), 0)
+        unit = "file" if n == 1 else "files"
+        print(f"{C_BLD}{name}{C_OFF} {C_DIM}({n} {unit}){C_OFF}")
+        print(f"{C_DIM}└─{C_OFF}{save_path}")
 
 
 def _resolve_remove_targets(args: list[str], qbt: QbtSession | None) -> list[str]:
@@ -1676,13 +1783,32 @@ def _safe_rmtree(path: str) -> None:
 # -------- main --------
 
 def main() -> None:
-    cfg = load_config()
-    init_log(cfg["logging"]["log_path"])
     global _SHOW_LEECHERS
+    cfg = load_config()
+    args = sys.argv[1:]
     _SHOW_LEECHERS = bool(cfg["display"]["show_leechers"])
+
+    # Hidden self-invocation used by fzf_search_prompt's reload binding to
+    # populate live nyaa results. Print one display row per item to stdout
+    # (consumed by fzf as candidates) and exit. Skips logging/readline setup
+    # since this fires on every keystroke pause and noisy logs would drown
+    # the real flow.
+    if args and args[0] == "--_search-rss":
+        query = " ".join(args[1:]).strip()
+        if not query:
+            return
+        items = fetch_items(query, cfg["search"])
+        width = max(40, shutil.get_terminal_size((120, 24)).columns - 3)
+        for item in items:
+            line = f"{format_stats(item)}  {colorize_title(item.title)}"
+            if item.category:
+                line = right_anchor(line, category_chip(item), width)
+            print(line)
+        return
+
+    init_log(cfg["logging"]["log_path"])
     setup_readline()
     log("INFO", f"=== anirss invoked: argv={sys.argv[1:]} ===")
-    args = sys.argv[1:]
 
     if args and args[0] in ("-h", "--help"):
         print(__doc__)
@@ -1811,7 +1937,7 @@ def main() -> None:
 
         while True:
             if state == "search":
-                result = fzf_search_prompt("Search > ", default=last_search_query)
+                result = fzf_search_prompt(PROMPT_SEARCH, default=last_search_query)
                 if result is None:
                     print(f"{C_DIM}cancelled.{C_OFF}")
                     return
