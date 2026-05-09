@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 
 # -------- ANSI --------
@@ -1651,12 +1651,26 @@ def cmd_query(qbt_cfg: QbtConfig, json_format: bool) -> None:
         return
 
     # Two-line tree-style output: name + count, then save_path under a `└─` prefix.
+    # Colors:
+    #   name        bold cyan
+    #   ( ... )     dim
+    #   N           bold yellow (or dim if 0)
+    #   files       dim
+    #   └─          dim cyan (matches ==> arrows used elsewhere)
+    #   save_path   green
+    #   [disabled]  red prefix on the name line for rules with enabled=false
     for name in sorted(rules, key=str.lower):
-        save_path = rules[name].get("savePath") or ""
+        rule = rules[name]
+        save_path = rule.get("savePath") or ""
         n = counts.get(_norm_path(save_path), 0)
         unit = "file" if n == 1 else "files"
-        print(f"{C_BLD}{name}{C_OFF} {C_DIM}({n} {unit}){C_OFF}")
-        print(f"{C_DIM}└─{C_OFF}{save_path}")
+        n_color = f"{C_BLD}{C_YEL}" if n > 0 else C_DIM
+        disabled = "" if rule.get("enabled", True) else f"{C_RED}[disabled]{C_OFF} "
+        print(
+            f"{disabled}{C_BLD}{C_CYN}{name}{C_OFF} "
+            f"{C_DIM}({C_OFF}{n_color}{n}{C_OFF}{C_DIM} {unit}){C_OFF}"
+        )
+        print(f"  {C_DIM}{C_CYN}└─{C_OFF}{C_GRN}{save_path}{C_OFF}")
 
 
 def _resolve_remove_targets(args: list[str], qbt: QbtSession | None) -> list[str]:
