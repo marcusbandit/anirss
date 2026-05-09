@@ -1,13 +1,13 @@
 pkgbase = anirss
 	pkgdesc = Search nyaa.si and hand the result to qBittorrent
-	pkgver = 0.2.5
+	pkgver = 0.2.6
 	pkgrel = 1
 	url = https://github.com/marcusbandit/anirss
 	arch = any
 	license = GPL-3.0-or-later
 	depends = python
 	depends = fzf
-	source = anirss-0.2.5.tar.gz::https://github.com/marcusbandit/anirss/archive/refs/tags/v0.2.5.tar.gz
-	sha256sums = ef85e1654a080a0be4883f564d24716f71ee0c55a0a405bc3805972049682f5a
+	source = anirss-0.2.6.tar.gz::https://github.com/marcusbandit/anirss/archive/refs/tags/v0.2.6.tar.gz
+	sha256sums = 91e83a33202cb7ae1e7e3535d6ea7a9614bfc7157338bb2b37579356ae47e247
 
 pkgname = anirss
