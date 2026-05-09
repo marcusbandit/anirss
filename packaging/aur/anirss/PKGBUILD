@@ -8,7 +8,7 @@ url="https://github.com/marcusbandit/anirss"
 license=('GPL-3.0-or-later')
 depends=('python' 'fzf')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/marcusbandit/anirss/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('REPLACE_ME_AFTER_PUSHING_TAG')
+sha256sums=('eab8bd26d0ee896e58876a3e1087b1aa19dc76d9da9065090f5eaf64d466623a')
 
 package() {
     cd "$pkgname-$pkgver"
