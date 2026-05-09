@@ -4,15 +4,28 @@
 Usage:
     anirss                        Prompt for a search.
     anirss [search query]         Search, refine, choose subscribe/download/movie.
-    anirss <rss-url>              Subscribe to an RSS feed URL.
+    anirss <nyaa-rss-url>         Extract `q=` from the URL and run as a fresh search.
     anirss <magnet|*.torrent>     Download a single torrent now.
+
+    anirss -S <url>               Subscribe: skip search/refine, go to action menu.
+    anirss -Sy                    Sync the feed cache from qBittorrent.
+
+    anirss -Q                     List subscribed feeds (cached).
+    anirss -Qj                    List subscribed feeds as JSON.
+
+    anirss -R <name>...           Remove feed + rule.
+    anirss -Rs <name>...          + remove torrents (keep files).
+    anirss -Rn <name>...          + delete files (torrents stay; will error in qB).
+    anirss -Rns <name>...         + everything (clean uninstall).
+    anirss --noconfirm            Skip the y/N prompt for -R*.
+
     anirss --no-seed              Set qBittorrent to pause torrents at ratio 0.
     anirss --config               Print the resolved config and exit.
     anirss --migrate-config       Append any new default sections to your config.toml.
     anirss --version              Print version and exit.
 
 Config: ~/.config/anirss/config.toml (auto-created on first run).
-Logs:   ~/.local/state/anirss/anirss.log
+State:  ~/.local/state/anirss/   (feeds.txt cache, qbt.sid session cookie, anirss.log)
 """
 
 from __future__ import annotations
@@ -37,7 +50,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 # -------- ANSI --------
@@ -64,8 +77,12 @@ FZF_BINDS = (
 _SHOW_LEECHERS: bool = True
 
 
-# -------- config --------
+# -------- config + state --------
 CONFIG_PATH = Path("~/.config/anirss/config.toml").expanduser()
+STATE_DIR = Path("~/.local/state/anirss").expanduser()
+SID_PATH = STATE_DIR / "qbt.sid"
+FEEDS_CACHE_PATH = STATE_DIR / "feeds.txt"
+FEED_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 
 class QbtConfig(TypedDict):
@@ -292,9 +309,7 @@ def _str_text(elem: ET.Element | None) -> str:
     return elem.text.strip()
 
 
-def fetch_items(query: str, search: SearchConfig) -> list[Item]:
-    """Return list of Items from the nyaa RSS for `query`."""
-    url = search_url(query, search)
+def _fetch_items_from_url(url: str) -> list[Item]:
     log("INFO", f"GET {url}")
     req = urllib.request.Request(url, headers={"User-Agent": "anirss/1.0"})
     try:
@@ -319,6 +334,11 @@ def fetch_items(query: str, search: SearchConfig) -> list[Item]:
             ))
     log("INFO", f"  -> {len(out)} items")
     return out
+
+
+def fetch_items(query: str, search: SearchConfig) -> list[Item]:
+    """Return list of Items from the nyaa RSS for `query`."""
+    return _fetch_items_from_url(search_url(query, search))
 
 
 # -------- title parsing --------
@@ -375,7 +395,9 @@ def title_tokens(title: str) -> list[str]:
 
 # -------- TUI picker --------
 
-def fzf_pick_one(options: list[str], header: str) -> str | None:
+def fzf_pick_one(
+    options: list[str], header: str, *, prompt_label: str = "filter > "
+) -> str | None:
     if not shutil.which("fzf") or not options:
         return None
     args = [
@@ -383,7 +405,7 @@ def fzf_pick_one(options: list[str], header: str) -> str | None:
         "--ansi",
         "--color", FZF_HL_COLORS,
         "--bind", FZF_BINDS,
-        "--prompt", "filter > ",
+        "--prompt", prompt_label,
         "--header", header,
         "--layout=reverse",
         "--height", "60%",
@@ -420,7 +442,7 @@ def fzf_pick_with_query(
         "--ansi",
         "--color", FZF_HL_COLORS,
         "--bind", FZF_BINDS,
-        "--prompt", "filter > ",
+        "--prompt", "Search > Filter > ",
         "--header", header,
         "--layout=reverse",
         "--height", "60%",
@@ -446,6 +468,41 @@ def fzf_pick_with_query(
         return query, None, False
     # 130 = esc/ctrl-c, anything else is treated as cancel.
     return "", None, True
+
+
+def fzf_search_prompt(prompt_label: str, *, default: str = "") -> str | None:
+    """fzf-style query input. Returns the typed string (possibly empty) on
+    Enter, or None on Esc/Ctrl-C. Persistent history lives in the standard
+    `search` history file, navigable with Up/Down inside the prompt.
+    """
+    history_file = _history_path("search")
+    try:
+        history_file.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+
+    if not shutil.which("fzf"):
+        # Fallback: readline prompt. die() exits on Ctrl-C/EOF, matching
+        # "Esc on search → quit".
+        return prompt(prompt_label, history="search") or ""
+
+    args = [
+        "fzf",
+        "--ansi",
+        "--color", FZF_HL_COLORS,
+        "--prompt", prompt_label,
+        "--query", default,
+        "--layout=reverse",
+        "--height", "5",
+        "--no-info",
+        "--header", "type a search query · Enter to search · Esc to quit",
+        "--bind", FZF_BINDS + ",enter:print-query,up:prev-history,down:next-history",
+        "--history", str(history_file),
+    ]
+    proc = subprocess.run(args, input="", text=True, stdout=subprocess.PIPE)
+    if proc.returncode != 0:
+        return None
+    return (proc.stdout or "").strip()
 
 
 def view_all_titles(items: list[Item]) -> None:
@@ -491,13 +548,14 @@ EXCLUDE = "[- exclude term...]"
 
 class Pick(NamedTuple):
     """Result of pick_group: a kind and (for "tokens"/"custom") the relevant terms."""
-    kind: str  # "tokens" | "done" | "exclude" | "show_all" | "custom"
+    kind: str  # "tokens" | "done" | "exclude" | "show_all" | "custom" | "back"
     tokens: list[str]
 
 
 PICK_DONE = Pick("done", [])
 PICK_EXCLUDE = Pick("exclude", [])
 PICK_SHOW_ALL = Pick("show_all", [])
+PICK_BACK = Pick("back", [])
 
 
 def colorize_title(title: str) -> str:
@@ -703,13 +761,13 @@ def pick_group(groups: list[Group], selected: list[Item]) -> Pick:
     ]
     header = (
         f"{n_results} results — pick a token, type to filter "
-        f"(adds to query if no match), or finalize (esc)"
+        f"(adds to query if no match) · [done] to finalize · esc → back to search"
     )
 
     query, choice, cancelled = fzf_pick_with_query(options, header)
 
     if cancelled:
-        return PICK_DONE
+        return PICK_BACK
     if choice is None:
         if query:
             log("INFO", f"custom-filter typed: {query!r}")
@@ -769,9 +827,12 @@ def add_term_to_query(query: str, term: str) -> str:
     return f"{query} {flag}"
 
 
-def refine(initial_query: str, items: list[Item], search: SearchConfig) -> tuple[str, list[Item]]:
-    """Return (final_query, list of Items) after interactive refinement on the
-    already-fetched `items` (caller is responsible for ensuring it's non-empty)."""
+def refine(
+    initial_query: str, items: list[Item], search: SearchConfig
+) -> tuple[str, list[Item], str]:
+    """Return (final_query, list of Items, status) after interactive refinement.
+    `status` is "done" if the user finalized, or "back" if Esc was pressed to
+    return to the search step. Caller must ensure `items` is non-empty."""
     query = initial_query.strip()
     log("INFO", f"refine start: {query!r} ({len(items)} items)")
     query, selected = auto_resolution(query, items)
@@ -783,9 +844,6 @@ def refine(initial_query: str, items: list[Item], search: SearchConfig) -> tuple
         print(f"{C_BLD}{count} result(s):{C_OFF}")
         show_titles(selected)
 
-        if count <= 1:
-            break
-
         groups = compute_groups(selected)
         if not groups:
             print(f"{C_DIM}(no token refinements left — exclude a term or finalize){C_OFF}")
@@ -793,6 +851,9 @@ def refine(initial_query: str, items: list[Item], search: SearchConfig) -> tuple
         pick = pick_group(groups, selected)
         if pick.kind == "done":
             break
+        if pick.kind == "back":
+            log("INFO", "refine: esc → back to search")
+            return query, selected, "back"
         if pick.kind == "show_all":
             view_all_titles(selected)
             continue
@@ -846,7 +907,7 @@ def refine(initial_query: str, items: list[Item], search: SearchConfig) -> tuple
 
     print()
     print(f"{C_GRN}{C_BLD}Final query:{C_OFF} {query}")
-    return query, selected
+    return query, selected, "done"
 
 
 # -------- qBittorrent --------
@@ -872,11 +933,169 @@ class QbtSession:
         log("INFO", f"  -> {body[:200]!r}{'...' if len(body) > 200 else ''}")
         return body
 
+    def get(self, endpoint: str, **params) -> str:
+        log("INFO", f"GET {endpoint} {params}")
+        url = f"{self.base_url}{endpoint}"
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url)
+        try:
+            with self.opener.open(req, timeout=15) as resp:
+                body = resp.read().decode()
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace") if e.fp else ""
+            log("ERROR", f"  -> HTTP {e.code}: {body or e.reason}")
+            die(f"qBittorrent {endpoint} -> HTTP {e.code}: {body or e.reason}")
+        log("INFO", f"  -> {body[:200]!r}{'...' if len(body) > 200 else ''}")
+        return body
 
-def qbt_login(base_url: str, username: str, password: str) -> tuple[QbtSession | None, str | None]:
+    def get_json(self, endpoint: str, **params):
+        return json.loads(self.get(endpoint, **params))
+
+    def is_alive(self) -> bool:
+        """Cheap auth check: hit /api/v2/app/version. Returns True on 200."""
+        url = f"{self.base_url}/api/v2/app/version"
+        req = urllib.request.Request(url)
+        try:
+            with self.opener.open(req, timeout=5) as resp:
+                resp.read()
+            return True
+        except (urllib.error.HTTPError, urllib.error.URLError):
+            return False
+
+
+# -------- qBittorrent: SID persistence --------
+
+def _make_qbt_opener(base_url: str) -> tuple[urllib.request.OpenerDirector, http.cookiejar.CookieJar]:
     jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
     opener.addheaders = [("Referer", base_url)]
+    return opener, jar
+
+
+def _save_sid(jar: http.cookiejar.CookieJar) -> None:
+    """Extract the `SID` cookie from `jar` and write it to SID_PATH (mode 600)."""
+    sid: str | None = None
+    for cookie in jar:
+        if cookie.name == "SID":
+            sid = cookie.value
+            break
+    if sid is None:
+        return
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            STATE_DIR.chmod(0o700)
+        except OSError:
+            pass
+        SID_PATH.write_text(sid)
+        SID_PATH.chmod(0o600)
+        log("INFO", f"saved SID to {SID_PATH}")
+    except OSError as e:
+        log("WARN", f"couldn't save SID to {SID_PATH}: {e}")
+
+
+def _load_sid() -> str | None:
+    try:
+        sid = SID_PATH.read_text().strip()
+        return sid or None
+    except OSError:
+        return None
+
+
+def _drop_sid() -> None:
+    try:
+        SID_PATH.unlink()
+        log("INFO", f"dropped stale SID at {SID_PATH}")
+    except OSError:
+        pass
+
+
+def _try_qbt_sid(base_url: str) -> QbtSession | None:
+    """Resume a qBittorrent session from the cached SID. None if no SID or it's dead."""
+    sid = _load_sid()
+    if sid is None:
+        return None
+    opener, jar = _make_qbt_opener(base_url)
+    host = urllib.parse.urlparse(base_url).hostname or ""
+    cookie = http.cookiejar.Cookie(
+        version=0, name="SID", value=sid,
+        port=None, port_specified=False,
+        domain=host, domain_specified=False, domain_initial_dot=False,
+        path="/", path_specified=True,
+        secure=base_url.startswith("https://"),
+        expires=None, discard=True,
+        comment=None, comment_url=None,
+        rest={}, rfc2109=False,
+    )
+    jar.set_cookie(cookie)
+    sess = QbtSession(opener, base_url)
+    if sess.is_alive():
+        log("INFO", "resumed qBittorrent session via cached SID")
+        return sess
+    _drop_sid()
+    return None
+
+
+# -------- qBittorrent: feed cache --------
+
+def write_feed_cache(names: list[str]) -> None:
+    """Atomically replace ~/.local/state/anirss/feeds.txt with the given names."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = FEEDS_CACHE_PATH.with_suffix(".tmp")
+        tmp.write_text("".join(name + "\n" for name in sorted(names, key=str.lower)))
+        tmp.replace(FEEDS_CACHE_PATH)
+        log("INFO", f"wrote feed cache ({len(names)} names) to {FEEDS_CACHE_PATH}")
+    except OSError as e:
+        log("WARN", f"couldn't write feed cache to {FEEDS_CACHE_PATH}: {e}")
+
+
+def read_feed_cache() -> list[str]:
+    try:
+        return [line for line in FEEDS_CACHE_PATH.read_text().splitlines() if line]
+    except OSError:
+        return []
+
+
+def feed_cache_age_seconds() -> float | None:
+    try:
+        return max(0.0, datetime.datetime.now().timestamp() - FEEDS_CACHE_PATH.stat().st_mtime)
+    except OSError:
+        return None
+
+
+def is_feed_cache_stale(threshold_seconds: float = FEED_CACHE_TTL_SECONDS) -> bool:
+    age = feed_cache_age_seconds()
+    return age is None or age > threshold_seconds
+
+
+def list_qbt_rule_names(qbt: QbtSession) -> list[str]:
+    """Return all qBittorrent RSS rule names. These are the same strings anirss subscribes under."""
+    rules = qbt.get_json("/api/v2/rss/rules")
+    if not isinstance(rules, dict):
+        return []
+    return list(rules.keys())
+
+
+def refresh_feed_cache(qbt: QbtSession) -> list[str]:
+    names = list_qbt_rule_names(qbt)
+    write_feed_cache(names)
+    return names
+
+
+def maybe_refresh_feed_cache(qbt: QbtSession) -> None:
+    """Refresh the feed cache if it's missing or older than 24h. Best-effort, logs only on failure."""
+    if not is_feed_cache_stale():
+        return
+    try:
+        refresh_feed_cache(qbt)
+    except Exception as e:  # noqa: BLE001 — silent best-effort on the way out
+        log("WARN", f"feed-cache refresh failed: {e}")
+
+
+def qbt_login(base_url: str, username: str, password: str) -> tuple[QbtSession | None, str | None]:
+    opener, jar = _make_qbt_opener(base_url)
     data = urllib.parse.urlencode({"username": username, "password": password}).encode()
     req = urllib.request.Request(f"{base_url}/api/v2/auth/login", data=data)
     log("INFO", f"POST /api/v2/auth/login user={username}")
@@ -888,6 +1107,7 @@ def qbt_login(base_url: str, username: str, password: str) -> tuple[QbtSession |
     log("INFO", f"  -> {body}")
     if body != "Ok.":
         return None, f"login: qBittorrent returned {body!r}"
+    _save_sid(jar)
     return QbtSession(opener, base_url), None
 
 
@@ -895,6 +1115,9 @@ def login_with_retry(qbt_cfg: QbtConfig) -> QbtSession:
     base_url = qbt_cfg["url"]
     username = qbt_cfg["username"]
     retries = int(qbt_cfg["login_retries"])
+    sess = _try_qbt_sid(base_url)
+    if sess is not None:
+        return sess
     for attempt in range(1, retries + 1):
         try:
             password = getpass.getpass(f"qBittorrent password ({attempt}/{retries}): ")
@@ -924,8 +1147,8 @@ def apply_no_seed(qbt_cfg: QbtConfig) -> None:
 
 # -------- main flow helpers --------
 
-ACT_SUB, ACT_DL_PICK, ACT_DL_ALL, ACT_MOVIE, ACT_CANCEL = (
-    "subscribe", "download_pick", "download_all", "movie", "cancel",
+ACT_SUB, ACT_DL_PICK, ACT_DL_ALL, ACT_MOVIE, ACT_CANCEL, ACT_BACK = (
+    "subscribe", "download_pick", "download_all", "movie", "cancel", "back",
 )
 
 
@@ -935,6 +1158,54 @@ def looks_like_url(s: str) -> bool:
 
 def is_one_shot_url(s: str) -> bool:
     return s.startswith("magnet:") or bool(re.search(r"\.torrent($|[?#])", s, re.IGNORECASE))
+
+
+def is_nyaa_url(s: str) -> bool:
+    """True for any http(s) URL whose host is nyaa.si or a *.nyaa.si subdomain."""
+    if not s.startswith(("http://", "https://")):
+        return False
+    try:
+        host = (urllib.parse.urlparse(s).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "nyaa.si" or host.endswith(".nyaa.si")
+
+
+def extract_nyaa_query(url: str) -> str | None:
+    """Pull the `q=` parameter out of a nyaa URL, decoded. Returns None if absent/empty."""
+    try:
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+    except ValueError:
+        return None
+    values = qs.get("q") or []
+    if not values:
+        return None
+    q = values[0].strip()
+    return q or None
+
+
+def parse_op_flag(arg: str) -> tuple[str, set[str]] | None:
+    """Recognize pacman-style bundled op flags: -Q, -Qj, -S, -Sy, -R, -Rs, -Rn, -Rns.
+
+    Returns (op_letter, set_of_modifier_letters) or None if `arg` is not an op flag.
+    Validates that exactly one of {Q, S, R} is the op and the rest are valid modifiers
+    for that op. Raises die() on a malformed bundle (e.g. -Rz, -QR, -Qs).
+    """
+    if not arg.startswith("-") or arg.startswith("--") or len(arg) < 2:
+        return None
+    body = arg[1:]
+    if not body or not body[0].isalpha():
+        return None
+    op = body[0]
+    if op not in ("Q", "S", "R"):
+        return None
+    mods = set(body[1:])
+    allowed = {"Q": {"j"}, "S": {"y"}, "R": {"n", "s"}}
+    bad = mods - allowed[op]
+    if bad:
+        die(f"unknown modifier(s) for -{op}: {''.join(sorted(bad))!r} "
+            f"(valid: {''.join(sorted(allowed[op])) or '<none>'})")
+    return op, mods
 
 
 def pick_action(n_items: int) -> str:
@@ -954,9 +1225,10 @@ def pick_action(n_items: int) -> str:
             text += f"{C_DIM}— {desc}{C_OFF}"
         labels.append(text)
         by_key[ansi_strip(text).strip()] = act
-    choice = fzf_pick_one(labels, f"{C_BLD}Choose an action{C_OFF}")
+    header = f"{C_BLD}Choose an action{C_OFF} · esc → back to filter"
+    choice = fzf_pick_one(labels, header, prompt_label="Search > Filter > Action > ")
     if choice is None:
-        return ACT_CANCEL
+        return ACT_BACK
     return by_key.get(ansi_strip(choice).strip(), ACT_CANCEL)
 
 
@@ -1176,6 +1448,231 @@ def do_movie(qbt: QbtSession, title: str, link: str, movie_path: str) -> None:
         die(f"qBittorrent torrents/add returned {body!r}")
 
 
+# -------- query / remove / sync --------
+
+def _norm_path(p: str) -> str:
+    return os.path.normpath(os.path.expanduser(p)).rstrip("/")
+
+
+def _human_bytes(n: int) -> str:
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    f = float(n)
+    for u in units:
+        if f < 1024.0 or u == units[-1]:
+            return f"{f:.1f} {u}" if u != "B" else f"{int(f)} {u}"
+        f /= 1024.0
+    return f"{n} B"
+
+
+def _dir_size_bytes(path: str) -> int:
+    """Recursive size of a directory (follows nothing, swallows OSError per-entry)."""
+    total = 0
+    for root, _dirs, files in os.walk(path, followlinks=False):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def _find_feed_path(qbt: QbtSession, rule_url: str) -> str | None:
+    """Walk the RSS items tree and return the qB feed-path whose `url` matches `rule_url`."""
+    items = qbt.get_json("/api/v2/rss/items", withData="false")
+
+    def walk(node, prefix: str) -> str | None:
+        if isinstance(node, dict):
+            if "url" in node and isinstance(node.get("url"), str) and node["url"] == rule_url:
+                return prefix.rstrip("\\")
+            for key, child in node.items():
+                hit = walk(child, f"{prefix}{key}\\")
+                if hit is not None:
+                    return hit
+        return None
+
+    return walk(items, "")
+
+
+def _torrents_for_savepath(qbt: QbtSession, save_path: str) -> list[dict]:
+    norm = _norm_path(save_path)
+    info = qbt.get_json("/api/v2/torrents/info")
+    if not isinstance(info, list):
+        return []
+    return [t for t in info if isinstance(t, dict) and _norm_path(t.get("save_path", "")) == norm]
+
+
+def cmd_sync(qbt_cfg: QbtConfig) -> None:
+    print(f"{C_CYN}==>{C_OFF} syncing feed cache from qBittorrent")
+    qbt = login_with_retry(qbt_cfg)
+    names = refresh_feed_cache(qbt)
+    print(f"{C_GRN}OK:{C_OFF} cached {len(names)} feed name(s) at {FEEDS_CACHE_PATH}")
+
+
+def cmd_query(qbt_cfg: QbtConfig, json_format: bool) -> None:
+    qbt = login_with_retry(qbt_cfg)
+    rules = qbt.get_json("/api/v2/rss/rules") or {}
+    if not isinstance(rules, dict):
+        rules = {}
+    info = qbt.get_json("/api/v2/torrents/info") if json_format else None
+
+    # Always refresh the cache as a side effect of -Q.
+    write_feed_cache(list(rules.keys()))
+
+    if not rules:
+        if json_format:
+            print("[]")
+        else:
+            print(f"{C_DIM}(no feeds subscribed){C_OFF}")
+        return
+
+    if json_format:
+        out: list[dict] = []
+        for name, rule in sorted(rules.items(), key=lambda kv: kv[0].lower()):
+            feeds = rule.get("affectedFeeds") or []
+            save_path = rule.get("savePath") or ""
+            torrent_count = (
+                sum(1 for t in info if isinstance(t, dict)
+                    and _norm_path(t.get("save_path", "")) == _norm_path(save_path))
+                if isinstance(info, list) else 0
+            )
+            out.append({
+                "name": name,
+                "feed_url": feeds[0] if feeds else "",
+                "save_path": save_path,
+                "rule_enabled": bool(rule.get("enabled", True)),
+                "torrent_count": torrent_count,
+            })
+        print(json.dumps(out, indent=2))
+        return
+
+    # Plain output: aligned name + savepath.
+    name_w = max(len(name) for name in rules)
+    for name in sorted(rules, key=str.lower):
+        save_path = rules[name].get("savePath") or ""
+        print(f"{name:<{name_w}}  {C_DIM}{save_path}{C_OFF}")
+
+
+def _resolve_remove_targets(args: list[str], qbt: QbtSession | None) -> list[str]:
+    """Return the list of rule names to remove. If args is empty and fzf is available,
+    multi-select from the live qB rule list. Errors out with a clear message otherwise.
+    """
+    if args:
+        return args
+    if qbt is None or not shutil.which("fzf"):
+        die("no targets given (and fzf not available for interactive picker)")
+    rules = qbt.get_json("/api/v2/rss/rules") or {}
+    names = sorted(rules.keys(), key=str.lower) if isinstance(rules, dict) else []
+    if not names:
+        die("no feeds to remove")
+    proc = subprocess.run(
+        ["fzf", "--multi", "--prompt", "remove > ",
+         "--header", "Tab/Space marks. Enter confirms. Esc cancels.",
+         "--bind", FZF_BINDS],
+        input="\n".join(names), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        die("cancelled")
+    chosen = [line for line in proc.stdout.splitlines() if line.strip()]
+    if not chosen:
+        die("no targets selected")
+    return chosen
+
+
+def cmd_remove(qbt_cfg: QbtConfig, args: list[str], drop_torrents: bool,
+               drop_files: bool, noconfirm: bool, save_base: str) -> None:
+    qbt = login_with_retry(qbt_cfg)
+    targets = _resolve_remove_targets(args, qbt)
+
+    rules = qbt.get_json("/api/v2/rss/rules") or {}
+    if not isinstance(rules, dict):
+        rules = {}
+
+    # Build per-target plans, validating up front so we don't half-destroy on a typo.
+    plans: list[dict] = []
+    missing: list[str] = []
+    for name in targets:
+        rule = rules.get(name)
+        if not isinstance(rule, dict):
+            missing.append(name)
+            continue
+        feeds = rule.get("affectedFeeds") or []
+        feed_url = feeds[0] if feeds else ""
+        save_path = _norm_path(rule.get("savePath") or os.path.join(save_base, name))
+        feed_path = _find_feed_path(qbt, feed_url) if feed_url else None
+        torrents = _torrents_for_savepath(qbt, save_path) if (drop_torrents or drop_files) else []
+        size_bytes = _dir_size_bytes(save_path) if (drop_files and os.path.isdir(save_path)) else 0
+        plans.append({
+            "name": name,
+            "feed_url": feed_url,
+            "feed_path": feed_path,
+            "save_path": save_path,
+            "torrents": torrents,
+            "size_bytes": size_bytes,
+            "torrent_count_in_qb": len(_torrents_for_savepath(qbt, save_path)) if drop_files and not drop_torrents else len(torrents),
+        })
+    if missing:
+        die(f"unknown feed(s): {', '.join(missing)} (run `anirss -Q` to list)")
+
+    # Render plan.
+    print()
+    for p in plans:
+        print(f"{C_BLD}About to remove:{C_OFF}")
+        print(f"  {C_CYN}Feed:{C_OFF}    {p['name']}")
+        print(f"  {C_CYN}Rule:{C_OFF}    {p['name']}")
+        if drop_torrents:
+            kept = "files deleted" if drop_files else "files kept"
+            print(f"  {C_CYN}Torrents:{C_OFF} {len(p['torrents'])} in qB (will be removed from qB, {kept})")
+        elif drop_files and p["torrent_count_in_qb"]:
+            print(f"  {C_YEL}Note:{C_OFF}    {p['torrent_count_in_qb']} torrent(s) will be left in qB and will error (-n without -s)")
+        if drop_files:
+            shown = p["save_path"] if os.path.isdir(p["save_path"]) else f"{p['save_path']} {C_DIM}(does not exist){C_OFF}"
+            print(f"  {C_CYN}Files:{C_OFF}   {shown}  {C_DIM}({_human_bytes(p['size_bytes'])}){C_OFF}")
+        print()
+
+    if not noconfirm:
+        try:
+            reply = input("Proceed? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            die("cancelled")
+        if reply not in ("y", "yes"):
+            print(f"{C_DIM}cancelled.{C_OFF}")
+            return
+
+    # Execute.
+    for p in plans:
+        if drop_torrents and p["torrents"]:
+            hashes = "|".join(t["hash"] for t in p["torrents"] if isinstance(t.get("hash"), str))
+            qbt.post("/api/v2/torrents/delete", hashes=hashes,
+                     deleteFiles=("true" if drop_files else "false"))
+            print(f"{C_GRN}OK:{C_OFF} removed {len(p['torrents'])} torrent(s) for {p['name']}")
+        if p["feed_path"]:
+            qbt.post("/api/v2/rss/removeItem", path=p["feed_path"])
+            print(f"{C_GRN}OK:{C_OFF} removed feed {p['name']}")
+        elif p["feed_url"]:
+            log("WARN", f"no qB feed-path matched url={p['feed_url']!r} for rule {p['name']!r}")
+        qbt.post("/api/v2/rss/removeRule", ruleName=p["name"])
+        print(f"{C_GRN}OK:{C_OFF} removed rule {p['name']}")
+        # Files: delete the directory unless qB already cleaned it (drop_torrents+drop_files).
+        if drop_files and not drop_torrents and os.path.isdir(p["save_path"]):
+            _safe_rmtree(p["save_path"])
+            print(f"{C_GRN}OK:{C_OFF} deleted files at {p['save_path']}")
+
+    refresh_feed_cache(qbt)
+
+
+def _safe_rmtree(path: str) -> None:
+    """rmtree with a paranoia guard against `~`, `/`, empty, and config/state dirs."""
+    p = _norm_path(path)
+    home = _norm_path(str(Path.home()))
+    forbidden = {"", "/", home, _norm_path(str(STATE_DIR)), _norm_path(str(CONFIG_PATH.parent))}
+    if p in forbidden or len(p) <= 1:
+        die(f"refusing to rmtree suspicious path: {path!r}")
+    try:
+        shutil.rmtree(p)
+    except OSError as e:
+        die(f"rmtree {p}: {e}")
+
+
 # -------- main --------
 
 def main() -> None:
@@ -1204,6 +1701,43 @@ def main() -> None:
         migrate_config()
         return
 
+    # Position-independent --noconfirm.
+    noconfirm = "--noconfirm" in args
+    args = [a for a in args if a != "--noconfirm"]
+
+    # Pacman-style op flags: -Q, -Qj, -S, -Sy, -R, -Rs, -Rn, -Rns.
+    op_parsed = parse_op_flag(args[0]) if args else None
+    if op_parsed is not None:
+        op_letter, mods = op_parsed
+        rest = args[1:]
+        if op_letter == "Q":
+            cmd_query(cfg["qbittorrent"], json_format=("j" in mods))
+            return
+        if op_letter == "S" and "y" in mods:
+            cmd_sync(cfg["qbittorrent"])
+            return
+        if op_letter == "S":
+            if not rest:
+                die("usage: anirss -S <rss-url>")
+            url = rest[0]
+            if not looks_like_url(url):
+                die(f"-S expects a URL, got {url!r}")
+            args = ["__force_action_menu__", url]  # marker handled below
+        if op_letter == "R":
+            cmd_remove(
+                cfg["qbittorrent"],
+                args=rest,
+                drop_torrents=("s" in mods),
+                drop_files=("n" in mods),
+                noconfirm=noconfirm,
+                save_base=cfg["downloads"]["save_base"],
+            )
+            return
+
+    s_force_action_menu = bool(args) and args[0] == "__force_action_menu__"
+    if s_force_action_menu:
+        args = args[1:]
+
     arg = " ".join(args).strip()
     default_name: str | None = None
     feed_url: str | None = None
@@ -1214,42 +1748,122 @@ def main() -> None:
         if is_one_shot_url(arg):
             download_links = [arg]
             print(f"{C_BLD}Direct download:{C_OFF} {arg}")
+        elif s_force_action_menu:
+            # -S <url>: fetch the URL directly, skip refine, jump to action menu.
+            print(f"{C_BLD}Subscribe URL:{C_OFF} {arg}")
+            print(f"{C_DIM}fetching feed...{C_OFF}")
+            items = _fetch_items_from_url(arg)
+            if not items:
+                die(f"no items returned by {arg}")
+            print(f"{C_BLD}{len(items)} item(s):{C_OFF}")
+            show_titles(items)
+            action = pick_action(len(items))
+            log("INFO", f"action={action}")
+            if action == ACT_CANCEL or action == ACT_BACK:
+                print(f"{C_DIM}cancelled.{C_OFF}")
+                return
+            default_name = show_name(items[0].title) or arg
+            if action == ACT_SUB:
+                feed_url = arg
+                print(f"{C_GRN}RSS URL:{C_OFF} {feed_url}")
+            elif action == ACT_DL_ALL:
+                download_links = [item.link for item in items]
+                print(f"{C_GRN}downloading all {len(download_links)} item(s){C_OFF}")
+            elif action == ACT_DL_PICK:
+                chosen = pick_downloads(items)
+                if not chosen:
+                    print(f"{C_DIM}cancelled.{C_OFF}")
+                    return
+                download_links = [item.link for item in chosen]
+                default_name = show_name(chosen[0].title) or default_name
+                print(f"{C_GRN}downloading {len(download_links)} selected item(s){C_OFF}")
+            else:  # ACT_MOVIE
+                movie_choice = pick_movie(items)
+                if movie_choice is None:
+                    print(f"{C_DIM}cancelled.{C_OFF}")
+                    return
+                print(f"{C_GRN}movie:{C_OFF} {movie_choice.title}")
+        elif is_nyaa_url(arg):
+            # Bare nyaa URL: extract `q=` and treat as a fresh search.
+            extracted = extract_nyaa_query(arg)
+            if not extracted:
+                die("nyaa URL has no `q=` parameter to search with — use `anirss -S <url>` to subscribe")
+            print(f"{C_DIM}extracted search:{C_OFF} {extracted}")
+            args = [extracted]
+            arg = extracted
+            # fall through to the search/refine state machine below
         else:
-            feed_url = arg
-            print(f"{C_BLD}Feed URL:{C_OFF} {arg}")
-    else:
+            die(f"bare URL only supported for nyaa.si — use `anirss -S {arg}` to subscribe")
+
+    # Run the search→refine→action state machine if no terminal action has been
+    # picked yet. After URL handling above, `arg` is either empty, a bare query
+    # string, or a search query extracted from a nyaa URL.
+    if not (download_links or feed_url or movie_choice) and not looks_like_url(arg):
+        # State machine: "search" → "fetch" → "refine" → "action".
+        # Esc inside action returns to refine (preserves filter state);
+        # esc inside refine returns to search; esc at search quits.
+        last_search_query = arg
         items: list[Item] = []
+        query: str = ""
+        selected: list[Item] = []
+        action: str = ACT_CANCEL
+        state = "fetch" if arg else "search"
+
         while True:
-            if not arg:
-                arg = prompt("Search: ", history="search")
-            if not arg:
-                print(f"{C_DIM}(empty — type something or Ctrl-C to quit){C_OFF}")
+            if state == "search":
+                result = fzf_search_prompt("Search > ", default=last_search_query)
+                if result is None:
+                    print(f"{C_DIM}cancelled.{C_OFF}")
+                    return
+                if not result:
+                    print(f"{C_DIM}(empty — type something or Esc to quit){C_OFF}")
+                    continue
+                last_search_query = result
+                arg = result
+                state = "fetch"
                 continue
-            print(f"{C_BLD}Query:{C_OFF} {arg}")
-            print(f"{C_DIM}fetching nyaa.si...{C_OFF}")
-            items = fetch_items(arg, cfg["search"])
-            if items:
-                break
-            print(f"{C_YEL}no results for {arg!r} — edit and try again "
-                  f"({C_DIM}↑ recalls last query{C_OFF}{C_YEL}){C_OFF}")
-            arg = ""
-        default_name = arg
-        query, items = refine(arg, items, cfg["search"])
-        if items:
-            default_name = show_name(items[0].title) or default_name
-        action = pick_action(len(items))
-        log("INFO", f"action={action}")
+            if state == "fetch":
+                print(f"{C_BLD}Query:{C_OFF} {arg}")
+                print(f"{C_DIM}fetching nyaa.si...{C_OFF}")
+                items = fetch_items(arg, cfg["search"])
+                if not items:
+                    print(f"{C_YEL}no results for {arg!r} — edit and try again "
+                          f"({C_DIM}↑ recalls last query{C_OFF}{C_YEL}){C_OFF}")
+                    state = "search"
+                    continue
+                query, selected = arg, items
+                state = "refine"
+                continue
+            if state == "refine":
+                query, selected, status = refine(query, selected, cfg["search"])
+                if status == "back":
+                    state = "search"
+                    continue
+                state = "action"
+                continue
+            # state == "action"
+            action = pick_action(len(selected))
+            log("INFO", f"action={action}")
+            if action == ACT_BACK:
+                state = "refine"
+                continue
+            break
+
         if action == ACT_CANCEL:
             print(f"{C_DIM}cancelled.{C_OFF}")
             return
+
+        default_name = arg
+        if selected:
+            default_name = show_name(selected[0].title) or default_name
         if action == ACT_SUB:
             feed_url = search_url(query, cfg["search"])
             print(f"{C_GRN}RSS URL:{C_OFF} {feed_url}")
         elif action == ACT_DL_ALL:
-            download_links = [item.link for item in items]
+            download_links = [item.link for item in selected]
             print(f"{C_GRN}downloading all {len(download_links)} item(s){C_OFF}")
         elif action == ACT_DL_PICK:
-            chosen = pick_downloads(items)
+            chosen = pick_downloads(selected)
             if not chosen:
                 print(f"{C_DIM}cancelled.{C_OFF}")
                 return
@@ -1257,7 +1871,7 @@ def main() -> None:
             default_name = show_name(chosen[0].title) or default_name
             print(f"{C_GRN}downloading {len(download_links)} selected item(s){C_OFF}")
         else:  # ACT_MOVIE
-            movie_choice = pick_movie(items)
+            movie_choice = pick_movie(selected)
             if movie_choice is None:
                 print(f"{C_DIM}cancelled.{C_OFF}")
                 return
@@ -1279,6 +1893,7 @@ def main() -> None:
     if movie_choice:
         do_movie(qbt, movie_choice.title, movie_choice.link, cfg["downloads"]["movie_path"])
 
+    maybe_refresh_feed_cache(qbt)
     log("INFO", "done")
     print(f"{C_GRN}done.{C_OFF}")
 

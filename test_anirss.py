@@ -255,3 +255,129 @@ def test_add_exclude_to_query_dash_only_term_is_noop():
 
 def test_add_exclude_to_query_whitespace_only_is_noop():
     assert anirss.add_exclude_to_query("Show", "   ") == "Show"
+
+
+# -------- parse_op_flag --------
+
+def test_parse_op_flag_bare():
+    assert anirss.parse_op_flag("-Q") == ("Q", set())
+    assert anirss.parse_op_flag("-S") == ("S", set())
+    assert anirss.parse_op_flag("-R") == ("R", set())
+
+
+def test_parse_op_flag_with_modifiers():
+    assert anirss.parse_op_flag("-Qj") == ("Q", {"j"})
+    assert anirss.parse_op_flag("-Sy") == ("S", {"y"})
+    assert anirss.parse_op_flag("-Rs") == ("R", {"s"})
+    assert anirss.parse_op_flag("-Rn") == ("R", {"n"})
+    assert anirss.parse_op_flag("-Rns") == ("R", {"n", "s"})
+
+
+def test_parse_op_flag_ignores_long_and_unknown():
+    assert anirss.parse_op_flag("--version") is None
+    assert anirss.parse_op_flag("-h") is None
+    assert anirss.parse_op_flag("frieren") is None
+    assert anirss.parse_op_flag("") is None
+    assert anirss.parse_op_flag("-") is None
+
+
+def test_parse_op_flag_rejects_bad_modifier(monkeypatch):
+    # `die` calls sys.exit(1); patch it to raise SystemExit so we can assert.
+    captured = {}
+    def fake_die(msg):
+        captured["msg"] = msg
+        raise SystemExit(1)
+    monkeypatch.setattr(anirss, "die", fake_die)
+
+    import pytest
+    with pytest.raises(SystemExit):
+        anirss.parse_op_flag("-Rz")
+    assert "z" in captured["msg"]
+
+
+# -------- nyaa URL detection + query extraction --------
+
+def test_is_nyaa_url_positive():
+    assert anirss.is_nyaa_url("https://nyaa.si/")
+    assert anirss.is_nyaa_url("https://nyaa.si/?page=rss&q=Frieren")
+    assert anirss.is_nyaa_url("http://nyaa.si/")
+    assert anirss.is_nyaa_url("https://sukebei.nyaa.si/")  # subdomain
+
+
+def test_is_nyaa_url_negative():
+    assert not anirss.is_nyaa_url("https://example.com/")
+    assert not anirss.is_nyaa_url("magnet:?xt=urn:btih:abc")
+    assert not anirss.is_nyaa_url("not a url")
+    assert not anirss.is_nyaa_url("")
+
+
+def test_extract_nyaa_query_basic():
+    url = "https://nyaa.si/?page=rss&q=Frieren&c=1_0&f=0"
+    assert anirss.extract_nyaa_query(url) == "Frieren"
+
+
+def test_extract_nyaa_query_url_encoded_spaces():
+    url = "https://nyaa.si/?page=rss&q=Sousou+no+Frieren"
+    assert anirss.extract_nyaa_query(url) == "Sousou no Frieren"
+    url2 = "https://nyaa.si/?page=rss&q=Sousou%20no%20Frieren"
+    assert anirss.extract_nyaa_query(url2) == "Sousou no Frieren"
+
+
+def test_extract_nyaa_query_missing():
+    assert anirss.extract_nyaa_query("https://nyaa.si/") is None
+    assert anirss.extract_nyaa_query("https://nyaa.si/?page=rss") is None
+    assert anirss.extract_nyaa_query("https://nyaa.si/?page=rss&q=") is None
+
+
+# -------- _norm_path --------
+
+def test_norm_path_strips_trailing_slash():
+    assert anirss._norm_path("/home/user/Anime/Frieren/") == "/home/user/Anime/Frieren"
+    assert anirss._norm_path("/home/user/Anime/Frieren") == "/home/user/Anime/Frieren"
+
+
+def test_norm_path_collapses_redundant_slashes():
+    assert anirss._norm_path("/home//user///Anime/") == "/home/user/Anime"
+
+
+def test_norm_path_expands_user(monkeypatch):
+    monkeypatch.setenv("HOME", "/home/x")
+    assert anirss._norm_path("~/Anime/Frieren/") == "/home/x/Anime/Frieren"
+
+
+# -------- _human_bytes --------
+
+def test_human_bytes_units():
+    assert anirss._human_bytes(0) == "0 B"
+    assert anirss._human_bytes(1023) == "1023 B"
+    assert anirss._human_bytes(1024) == "1.0 KiB"
+    assert anirss._human_bytes(1024 * 1024) == "1.0 MiB"
+    assert anirss._human_bytes(int(2.5 * 1024 * 1024 * 1024)) == "2.5 GiB"
+
+
+# -------- feed cache I/O --------
+
+def test_feed_cache_round_trip(tmp_path, monkeypatch):
+    cache_path = tmp_path / "feeds.txt"
+    monkeypatch.setattr(anirss, "FEEDS_CACHE_PATH", cache_path)
+    monkeypatch.setattr(anirss, "STATE_DIR", tmp_path)
+
+    anirss.write_feed_cache(["b feed", "A feed", "c feed"])
+    # Sorted case-insensitively.
+    assert anirss.read_feed_cache() == ["A feed", "b feed", "c feed"]
+
+
+def test_feed_cache_age_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(anirss, "FEEDS_CACHE_PATH", tmp_path / "missing.txt")
+    assert anirss.feed_cache_age_seconds() is None
+    assert anirss.is_feed_cache_stale()
+
+
+def test_feed_cache_stale_threshold(tmp_path, monkeypatch):
+    cache_path = tmp_path / "feeds.txt"
+    monkeypatch.setattr(anirss, "FEEDS_CACHE_PATH", cache_path)
+    monkeypatch.setattr(anirss, "STATE_DIR", tmp_path)
+    anirss.write_feed_cache(["x"])
+    assert not anirss.is_feed_cache_stale(threshold_seconds=3600)
+    # Threshold smaller than the smallest meaningful age -> always stale.
+    assert anirss.is_feed_cache_stale(threshold_seconds=-1)

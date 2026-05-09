@@ -86,6 +86,25 @@ case ":$PATH:" in
         ;;
 esac
 
+# --- shell completions (best-effort, user-level) ---
+if [ -f "$REPO_DIR/completions/_anirss" ]; then
+    zsh_dir="${XDG_DATA_HOME:-$HOME/.local/share}/zsh/site-functions"
+    mkdir -p "$zsh_dir"
+    install -m 644 "$REPO_DIR/completions/_anirss" "$zsh_dir/_anirss"
+    ok "zsh completion -> $zsh_dir/_anirss"
+    case ":${fpath[*]:-}:" in
+        *":$zsh_dir:"*) ;;
+        *) warn "$zsh_dir is not on \$fpath. Add to ~/.zshrc (before \`compinit\`):"
+           echo "         fpath=($zsh_dir \$fpath)" ;;
+    esac
+fi
+if [ -f "$REPO_DIR/completions/anirss.bash" ]; then
+    bash_dir="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"
+    mkdir -p "$bash_dir"
+    install -m 644 "$REPO_DIR/completions/anirss.bash" "$bash_dir/anirss"
+    ok "bash completion -> $bash_dir/anirss"
+fi
+
 # --- config: bootstrap on first install, migrate on updates ---
 mkdir -p "$CONFIG_DIR"
 if [ ! -f "$CONFIG_DIR/config.toml" ]; then
