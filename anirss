@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 
 # -------- ANSI --------
@@ -1577,6 +1577,16 @@ def _dir_size_bytes(path: str) -> int:
     return total
 
 
+def _dir_file_count(path: str) -> int:
+    """Recursive count of regular files under `path`. Returns 0 if missing."""
+    if not os.path.isdir(path):
+        return 0
+    total = 0
+    for _root, _dirs, files in os.walk(path, followlinks=False):
+        total += len(files)
+    return total
+
+
 def _find_feed_path(qbt: QbtSession, rule_url: str) -> str | None:
     """Walk the RSS items tree and return the qB feed-path whose `url` matches `rule_url`."""
     items = qbt.get_json("/api/v2/rss/items", withData="false")
@@ -1640,37 +1650,46 @@ def cmd_query(qbt_cfg: QbtConfig, json_format: bool) -> None:
             feeds = rule.get("affectedFeeds") or []
             save_path = rule.get("savePath") or ""
             torrent_count = counts.get(_norm_path(save_path), 0)
+            file_count = _dir_file_count(save_path)
             out.append({
                 "name": name,
                 "feed_url": feeds[0] if feeds else "",
                 "save_path": save_path,
                 "rule_enabled": bool(rule.get("enabled", True)),
                 "torrent_count": torrent_count,
+                "file_count": file_count,
             })
         print(json.dumps(out, indent=2))
         return
 
-    # Two-line tree-style output: name + count, then save_path under a `└─` prefix.
+    # Two-line tree-style output:
+    #   name (N torrents)            ← qBittorrent rule + how many torrent items the rule produced
+    #     └─save_path (M files)      ← actual count of files on disk under that directory
     # Colors:
     #   name        bold cyan
-    #   ( ... )     dim
-    #   N           bold yellow (or dim if 0)
-    #   files       dim
-    #   └─          dim cyan (matches ==> arrows used elsewhere)
+    #   parens/unit dim
+    #   N / M       bold yellow (dim if 0)
+    #   └─          dim cyan
     #   save_path   green
-    #   [disabled]  red prefix on the name line for rules with enabled=false
+    #   [disabled]  red prefix when rule.enabled is False
     for name in sorted(rules, key=str.lower):
         rule = rules[name]
         save_path = rule.get("savePath") or ""
-        n = counts.get(_norm_path(save_path), 0)
-        unit = "file" if n == 1 else "files"
-        n_color = f"{C_BLD}{C_YEL}" if n > 0 else C_DIM
+        n_torrents = counts.get(_norm_path(save_path), 0)
+        n_files = _dir_file_count(save_path)
+        t_unit = "torrent" if n_torrents == 1 else "torrents"
+        f_unit = "file" if n_files == 1 else "files"
+        t_color = f"{C_BLD}{C_YEL}" if n_torrents > 0 else C_DIM
+        f_color = f"{C_BLD}{C_YEL}" if n_files > 0 else C_DIM
         disabled = "" if rule.get("enabled", True) else f"{C_RED}[disabled]{C_OFF} "
         print(
             f"{disabled}{C_BLD}{C_CYN}{name}{C_OFF} "
-            f"{C_DIM}({C_OFF}{n_color}{n}{C_OFF}{C_DIM} {unit}){C_OFF}"
+            f"{C_DIM}({C_OFF}{t_color}{n_torrents}{C_OFF}{C_DIM} {t_unit}){C_OFF}"
         )
-        print(f"  {C_DIM}{C_CYN}└─{C_OFF}{C_GRN}{save_path}{C_OFF}")
+        print(
+            f"  {C_DIM}{C_CYN}└─{C_OFF}{C_GRN}{save_path}{C_OFF} "
+            f"{C_DIM}({C_OFF}{f_color}{n_files}{C_OFF}{C_DIM} {f_unit}){C_OFF}"
+        )
 
 
 def _resolve_remove_targets(args: list[str], qbt: QbtSession | None) -> list[str]:
