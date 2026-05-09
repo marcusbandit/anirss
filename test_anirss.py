@@ -381,3 +381,63 @@ def test_feed_cache_stale_threshold(tmp_path, monkeypatch):
     assert not anirss.is_feed_cache_stale(threshold_seconds=3600)
     # Threshold smaller than the smallest meaningful age -> always stale.
     assert anirss.is_feed_cache_stale(threshold_seconds=-1)
+
+
+# -------- _make_sid_cookie --------
+
+def test_sid_cookie_attaches_to_outgoing_request():
+    """Regression: the synthetic SID cookie must actually be sent by cookielib.
+
+    The earlier `domain_specified=False, discard=True` combination silently
+    failed to match outgoing requests, so the validation hit (/api/v2/app/version)
+    went unauthenticated, qB returned 403, and the SID was dropped as 'stale'.
+    """
+    import http.cookiejar
+    import urllib.request
+
+    jar = http.cookiejar.CookieJar()
+    jar.set_cookie(anirss._make_sid_cookie("localhost", "deadbeef123", https=False))
+
+    req = urllib.request.Request("http://localhost:8080/api/v2/app/version")
+    jar.add_cookie_header(req)
+    assert req.get_header("Cookie") == "SID=deadbeef123"
+
+
+def test_sid_cookie_does_not_leak_to_other_hosts():
+    import http.cookiejar
+    import urllib.request
+
+    jar = http.cookiejar.CookieJar()
+    jar.set_cookie(anirss._make_sid_cookie("localhost", "deadbeef123", https=False))
+
+    other = urllib.request.Request("http://example.com/api/v2/app/version")
+    jar.add_cookie_header(other)
+    assert other.get_header("Cookie") is None
+
+
+def test_effective_cookie_host_munges_only_dotless_hostnames():
+    # Bare hostname → suffixed with .local (cookielib's effective request host).
+    assert anirss._effective_cookie_host("localhost") == "localhost.local"
+    assert anirss._effective_cookie_host("qbt") == "qbt.local"
+    # FQDN, IPv4, or pre-suffixed: pass through unchanged.
+    assert anirss._effective_cookie_host("qbt.example.com") == "qbt.example.com"
+    assert anirss._effective_cookie_host("192.168.1.5") == "192.168.1.5"
+    assert anirss._effective_cookie_host("nas.local") == "nas.local"
+    assert anirss._effective_cookie_host("") == ""
+
+
+def test_sid_cookie_https_only_when_https_set():
+    import http.cookiejar
+    import urllib.request
+
+    # secure=True should keep the cookie off http requests.
+    jar = http.cookiejar.CookieJar()
+    jar.set_cookie(anirss._make_sid_cookie("localhost", "abc", https=True))
+
+    http_req = urllib.request.Request("http://localhost:8080/x")
+    jar.add_cookie_header(http_req)
+    assert http_req.get_header("Cookie") is None  # secure cookie not sent over http
+
+    https_req = urllib.request.Request("https://localhost:8080/x")
+    jar.add_cookie_header(https_req)
+    assert https_req.get_header("Cookie") == "SID=abc"

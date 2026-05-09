@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 
 # -------- ANSI --------
@@ -1104,6 +1104,44 @@ def _drop_sid() -> None:
         pass
 
 
+def _effective_cookie_host(host: str) -> str:
+    """Mirror cookielib's `eff_request_host()` munging.
+
+    cookielib internally rewrites bare hostnames (no dots, non-IPv4) by
+    appending `.local`, so a request to `http://localhost/` is matched
+    against the effective host `localhost.local`. If our cookie's domain is
+    just `localhost`, the suffix-match in the cookie policy fails and the
+    cookie is silently dropped on every outgoing request. Pre-applying the
+    same transform here so domain matches really happen.
+    """
+    if not host or "." in host:
+        return host
+    return host + ".local"
+
+
+def _make_sid_cookie(host: str, sid: str, *, https: bool) -> http.cookiejar.Cookie:
+    """Build a CookieJar-eligible SID cookie for qBittorrent's WebUI.
+
+    Three flags matter and got it wrong before:
+      * `domain` must match cookielib's effective request host (see
+        `_effective_cookie_host` — needed for `localhost`).
+      * `domain_specified=True` so the policy recognises this cookie's domain
+        as the host the cookie will be sent to.
+      * `discard=False` so the jar keeps it for subsequent requests.
+    Together with the above, the SID is actually attached to outgoing calls.
+    """
+    return http.cookiejar.Cookie(
+        version=0, name="SID", value=sid,
+        port=None, port_specified=False,
+        domain=_effective_cookie_host(host), domain_specified=True, domain_initial_dot=False,
+        path="/", path_specified=True,
+        secure=https,
+        expires=None, discard=False,
+        comment=None, comment_url=None,
+        rest={}, rfc2109=False,
+    )
+
+
 def _try_qbt_sid(base_url: str) -> QbtSession | None:
     """Resume a qBittorrent session from the cached SID. None if no SID or it's dead."""
     sid = _load_sid()
@@ -1111,17 +1149,7 @@ def _try_qbt_sid(base_url: str) -> QbtSession | None:
         return None
     opener, jar = _make_qbt_opener(base_url)
     host = urllib.parse.urlparse(base_url).hostname or ""
-    cookie = http.cookiejar.Cookie(
-        version=0, name="SID", value=sid,
-        port=None, port_specified=False,
-        domain=host, domain_specified=False, domain_initial_dot=False,
-        path="/", path_specified=True,
-        secure=base_url.startswith("https://"),
-        expires=None, discard=True,
-        comment=None, comment_url=None,
-        rest={}, rfc2109=False,
-    )
-    jar.set_cookie(cookie)
+    jar.set_cookie(_make_sid_cookie(host, sid, https=base_url.startswith("https://")))
     sess = QbtSession(opener, base_url)
     if sess.is_alive():
         log("INFO", "resumed qBittorrent session via cached SID")
