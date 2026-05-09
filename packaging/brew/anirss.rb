@@ -1,5 +1,3 @@
-require "language/python"
-
 class Anirss < Formula
   desc "Search nyaa.si and hand the result to qBittorrent"
   homepage "https://github.com/marcusbandit/anirss"
@@ -12,7 +10,8 @@ class Anirss < Formula
   depends_on "python@3.13"
 
   def install
-    rewrite_shebang detected_python_shebang, "anirss"
+    python = Formula["python@3.13"].opt_bin/"python3.13"
+    inreplace "anirss", "#!/usr/bin/env python3", "#!#{python}"
     bin.install "anirss"
   end
 
