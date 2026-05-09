@@ -9,6 +9,7 @@ Usage:
     anirss --no-seed              Set qBittorrent to pause torrents at ratio 0.
     anirss --config               Print the resolved config and exit.
     anirss --migrate-config       Append any new default sections to your config.toml.
+    anirss --version              Print version and exit.
 
 Config: ~/.config/anirss/config.toml (auto-created on first run).
 Logs:   ~/.local/state/anirss/anirss.log
@@ -34,6 +35,9 @@ import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
+
+
+__version__ = "0.1.0"
 
 
 # -------- ANSI --------
@@ -1185,6 +1189,9 @@ def main() -> None:
 
     if args and args[0] in ("-h", "--help"):
         print(__doc__)
+        return
+    if args and args[0] in ("-V", "--version"):
+        print(f"anirss {__version__}")
         return
     if args and args[0] in ("--no-seed", "--apply-no-seed"):
         apply_no_seed(cfg["qbittorrent"])
