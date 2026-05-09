@@ -1,49 +1,51 @@
 #compdef anirss
 # zsh completion for anirss.
 #
-# Sources feed names from ~/.local/state/anirss/feeds.txt — that file is
-# refreshed on every successful qBittorrent login (or run `anirss -Sy` to force).
+# Feed names come from ~/.local/state/anirss/feeds.txt — refreshed on every
+# successful qBittorrent login (or run `anirss -Sy` to force).
+#
+# This file is loaded by zsh's compsys via `autoload -Uz`. The whole file
+# *is* the body of the `_anirss` completion function — no inner wrapper
+# needed.
 
-_anirss() {
-    local cache="${XDG_STATE_HOME:-$HOME/.local/state}/anirss/feeds.txt"
-    local -a ops feeds
+local cache="${XDG_STATE_HOME:-$HOME/.local/state}/anirss/feeds.txt"
+local -a ops feeds
 
-    ops=(
-        '-Q[list subscribed feeds]'
-        '-Qj[list subscribed feeds as JSON]'
-        '-S[subscribe to a URL (skip search/refine)]'
-        '-Sy[refresh the feed cache]'
-        '-R[remove feed + rule]'
-        '-Rs[remove + qB torrents (keep files)]'
-        '-Rn[remove + files (keep torrents)]'
-        '-Rns[remove + torrents + files]'
-        '--noconfirm[skip the y/N prompt for -R*]'
-        '--no-seed[set qB to pause torrents at ratio 0]'
-        '--config[print resolved config and exit]'
-        '--migrate-config[append new default config sections]'
-        '--version[print version]'
-        '-h[help]'
-        '--help[help]'
-    )
+ops=(
+    '-Q:list subscribed feeds'
+    '-Qj:list subscribed feeds as JSON'
+    '-S:subscribe to a URL (skip search/refine)'
+    '-Sy:refresh the feed cache'
+    '-R:remove feed + rule'
+    '-Rs:remove + qB torrents (keep files)'
+    '-Rn:remove + files (keep torrents)'
+    '-Rns:remove + torrents + files'
+    '--noconfirm:skip the y/N prompt for -R*'
+    '--no-seed:set qB to pause torrents at ratio 0'
+    '--config:print resolved config and exit'
+    '--migrate-config:append new default config sections'
+    '--version:print version'
+    '-h:help'
+    '--help:help'
+)
 
-    if (( CURRENT == 2 )); then
-        _describe 'operation' ops
-        return
-    fi
+# First word after the command: offer the operation flags.
+if (( CURRENT == 2 )); then
+    _describe -t operations 'operation' ops
+    return
+fi
 
-    case $words[2] in
-        -R|-Rs|-Rn|-Rns)
-            if [[ -f $cache ]]; then
-                if [[ -n $(find $cache -mmin +1440 -print 2>/dev/null) ]]; then
-                    _message -r '(feed cache may be stale — anirss -Sy)'
-                fi
-                feeds=("${(@f)$(<$cache)}")
-                _describe 'feed' feeds
-            else
-                _message -r 'no cached feeds — run: anirss -Sy'
+# After -R / -Rs / -Rn / -Rns: complete feed names from the cache.
+case $words[2] in
+    (-R|-Rs|-Rn|-Rns)
+        if [[ -f $cache ]]; then
+            if [[ -n $(find $cache -mmin +1440 -print 2>/dev/null) ]]; then
+                _message -r '(feed cache may be stale — anirss -Sy)'
             fi
-            ;;
-    esac
-}
-
-_anirss "$@"
+            feeds=("${(@f)$(<$cache)}")
+            _describe -t feeds 'feed' feeds
+        else
+            _message -r 'no cached feeds — run: anirss -Sy'
+        fi
+        ;;
+esac

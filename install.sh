@@ -112,10 +112,14 @@ if [ -f "$REPO_DIR/completions/_anirss" ]; then
         warn "$zsh_dir is not on a default \$fpath. Add to ~/.zshrc (before 'compinit'):"
         echo "         fpath=(\"$zsh_dir\" \$fpath)"
     fi
-    # zsh caches completion lookups in .zcompdump; nudge the user to refresh.
+    # zsh caches completion lookups in .zcompdump and won't re-scan fpath until
+    # the dump is stale or removed. Wipe it so the new completion is picked up
+    # on next shell start. compinit will rebuild it automatically.
     if ls "$HOME"/.zcompdump* >/dev/null 2>&1; then
-        echo "         to use immediately: rm -f ~/.zcompdump*; exec zsh"
+        rm -f "$HOME"/.zcompdump* 2>/dev/null || true
+        ok "wiped stale ~/.zcompdump* (zsh will rebuild on next start)"
     fi
+    echo "         start a new shell or run 'exec zsh' to use it"
 fi
 if [ -f "$REPO_DIR/completions/anirss.bash" ]; then
     bash_dir="${XDG_DATA_HOME:-$HOME/.local/share}/bash-completion/completions"

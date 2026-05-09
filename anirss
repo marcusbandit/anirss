@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 
 # -------- ANSI --------
@@ -524,21 +524,23 @@ def fzf_search_prompt(prompt_label: str, *, default: str = "") -> str | None:
     fzf_args = [
         "fzf",
         "--ansi",
-        "--disabled",  # let nyaa do the filtering; fzf only renders.
+        "--disabled",       # nyaa does the filtering; fzf only renders.
+        "--no-mouse",       # no clicking on items either.
+        "--print-query",
+        "--expect", "ctrl-c,enter",  # Enter is an exit-key — never selects an item.
         "--color", FZF_HL_COLORS,
         "--prompt", prompt_label,
         "--query", default,
         "--layout=reverse",
+        "--header-first",   # in reverse layout, this puts the header at the top.
         "--height", "90%",
         "--no-info",
         "--preview-window=hidden",
         "--header",
-        f"type to search nyaa · ~1s after pause results refresh · "
-        f"{C_BLD}Enter{C_OFF} confirms · {C_BLD}Esc{C_OFF} back · {C_BLD}Ctrl-C{C_OFF} quit",
-        "--expect", "ctrl-c",
+        f"type to search nyaa · pauses ~1 s before refresh · "
+        f"{C_BLD}Enter{C_OFF} confirms · {C_BLD}Esc{C_OFF} back · {C_BLD}Ctrl-C{C_OFF} quits",
         "--history", str(history_file),
         "--bind", FZF_BINDS,
-        "--bind", "enter:print-query+abort",
         "--bind", f"change:reload({search_cmd})",
     ]
     if default:
@@ -547,27 +549,26 @@ def fzf_search_prompt(prompt_label: str, *, default: str = "") -> str | None:
     proc = subprocess.run(fzf_args, input="", text=True, stdout=subprocess.PIPE)
     out = proc.stdout or ""
     lines = out.split("\n")
-    first = lines[0].strip() if lines else ""
+    # With --print-query + --expect: line 0 = typed query, line 1 = expect-key
+    # ("enter", "ctrl-c", or empty for Esc). Any selected item is on line 2 and
+    # is intentionally ignored — Enter always returns what the user typed.
+    query = lines[0] if lines else ""
+    expect_key = lines[1].strip() if len(lines) > 1 else ""
 
-    # Ctrl-C with --expect: returncode 0 (or 1), first line is "ctrl-c". We
-    # exit Python entirely here rather than going through _check_fzf_ctrlc
-    # because there is no --print-query offset to worry about.
-    if proc.returncode in (0, 1) and first == "ctrl-c":
+    if expect_key == "ctrl-c":
         log("INFO", "ctrl-c at search prompt — terminating")
         sys.exit(130)
-
-    if proc.returncode == 130:
-        # Either Enter (`enter:print-query+abort` printed the query then aborted)
-        # or Esc (no output). Distinguish by output content.
-        if first:
-            try:
-                with history_file.open("a") as f:
-                    f.write(first + "\n")
-            except OSError:
-                pass
-            return first
-        return None
-
+    if expect_key == "enter":
+        q = query.strip()
+        if not q:
+            return None
+        try:
+            with history_file.open("a") as f:
+                f.write(q + "\n")
+        except OSError:
+            pass
+        return q
+    # No expect-key set → Esc (returncode 130) or other → back.
     return None
 
 
