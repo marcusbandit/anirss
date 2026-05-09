@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
 
 
 # -------- ANSI --------
@@ -76,6 +76,10 @@ FZF_BINDS = (
 PROMPT_SEARCH = f"{C_YEL}Search >{C_OFF} "
 PROMPT_FILTER = f"{C_YEL}Search >{C_OFF} {C_BLU}Filter >{C_OFF} "
 PROMPT_ACTION = f"{C_YEL}Search >{C_OFF} {C_BLU}Filter >{C_OFF} {C_GRN}Action >{C_OFF} "
+
+# Max height (terminal lines) for the compact pickers (filter, action, etc.).
+# Kept small so the printed Results box above can use the rest of the screen.
+FILTER_PICKER_LINES = 14
 
 # Set from cfg in main(); guards leechers in format_stats. Default True is only
 # relevant if format_stats is called before main() (none currently does).
@@ -416,6 +420,7 @@ def fzf_pick_one(
 ) -> str | None:
     if not shutil.which("fzf") or not options:
         return None
+    height_lines = min(max(len(options) + 4, 6), FILTER_PICKER_LINES)
     args = [
         "fzf",
         "--ansi",
@@ -424,7 +429,7 @@ def fzf_pick_one(
         "--prompt", prompt_label,
         "--header", header,
         "--layout=reverse",
-        "--height", "60%",
+        "--height", str(height_lines),
         "--cycle",
         "--no-info",
         "--preview-window=hidden",
@@ -459,6 +464,9 @@ def fzf_pick_with_query(
     """
     if not shutil.which("fzf") or not options:
         return "", None, True
+    # Pick a height just tall enough for the option list (capped). Keeps the
+    # filter picker compact so the printed Results box above can stay long.
+    height_lines = min(max(len(options) + 4, 6), FILTER_PICKER_LINES)
     args = [
         "fzf",
         "--ansi",
@@ -467,7 +475,7 @@ def fzf_pick_with_query(
         "--prompt", PROMPT_FILTER,
         "--header", header,
         "--layout=reverse",
-        "--height", "60%",
+        "--height", str(height_lines),
         "--cycle",
         "--no-info",
         "--print-query",
@@ -749,8 +757,13 @@ def format_stats(item: Item) -> str:
     return f"  {C_DIM}·{C_OFF}  ".join(parts)
 
 
-def show_titles(items: list[Item], cap: int = 15) -> None:
-    width = shutil.get_terminal_size((120, 24)).columns
+def show_titles(items: list[Item], cap: int | None = None) -> None:
+    term = shutil.get_terminal_size((120, 24))
+    if cap is None:
+        # Reserve: filter picker + Query line + count line + box borders + "more" line + slack.
+        reserved = FILTER_PICKER_LINES + 8
+        cap = max(8, term.lines - reserved)
+    width = term.columns
     inner = max(40, width - 4)  # 4 = "│ " + " │"
     bar = "─" * (inner + 2)
     print(f"{C_DIM}╭{bar}╮{C_OFF}")
@@ -934,7 +947,6 @@ def refine(
     while True:
         count = len(selected)
         print()
-        print(f"{C_BLD}Query:{C_OFF} {query}")
         print(f"{C_BLD}{count} result(s):{C_OFF}")
         show_titles(selected)
 
@@ -942,6 +954,10 @@ def refine(
         if not groups:
             print(f"{C_DIM}(no token refinements left — exclude a term or finalize){C_OFF}")
 
+        # Query line sits immediately above the picker so the user can see what
+        # they're filtering against without scanning back to the top.
+        print()
+        print(f"{C_BLD}Query:{C_OFF} {query}")
         pick = pick_group(groups, selected)
         if pick.kind == "done":
             break

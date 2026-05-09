@@ -43,7 +43,11 @@ case $words[2] in
                 _message -r '(feed cache may be stale — anirss -Sy)'
             fi
             feeds=("${(@f)$(<$cache)}")
-            _describe -t feeds 'feed' feeds
+            # `compadd -a` takes the array as raw values (no value:description
+            # parsing), so feed names containing `:` (e.g. "Dr. Stone: ...")
+            # aren't split into pseudo-descriptions. compsys still handles
+            # quoting on insertion for names that contain spaces.
+            _wanted feeds expl 'feed' compadd -a feeds
         else
             _message -r 'no cached feeds — run: anirss -Sy'
         fi
