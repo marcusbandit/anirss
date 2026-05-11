@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 
-__version__ = "0.2.7"
+__version__ = "0.2.8"
 
 
 # -------- ANSI --------
@@ -643,8 +643,8 @@ def view_all_titles(items: list[Item]) -> None:
 
 # -------- search/refine --------
 
-DONE = "[→ CONTINUE TO ACTIONS]"
-EXCLUDE = "[✗ EXCLUDE TERM…]"
+DONE = "[→ Continue To Actions]"
+EXCLUDE = "[✗ Exclude Term…]"
 
 
 class Pick(NamedTuple):
@@ -854,16 +854,18 @@ def pick_group(groups: list[Group], selected: list[Item]) -> Pick:
     caller can decide whether to fold the text into the nyaa query.
     """
     n_results = len(selected)
-    show_all_label = f"[≡ SHOW ALL {n_results} TITLES]"
+    show_all_label = f"[≡ Show All {n_results} Titles]"
     label_width = 28
+    # Special actions go FIRST so they sit at the top of the picker — easier to
+    # reach than scrolling past dozens of tokens. Token rows follow.
     options = [
-        f"{colorize_picker_label(g.label, label_width)} {C_DIM}({g.member_count}){C_OFF}"
-        for g in groups
-    ]
-    options += [
         f"{C_YEL}{show_all_label}{C_OFF}",
         f"{C_GRN}{DONE}{C_OFF}",
         f"{C_RED}{EXCLUDE}{C_OFF}",
+    ]
+    options += [
+        f"{colorize_picker_label(g.label, label_width)} {C_DIM}({g.member_count}){C_OFF}"
+        for g in groups
     ]
     header = (
         f"{n_results} results — pick a token, type to filter "
