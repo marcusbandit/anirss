@@ -50,7 +50,7 @@ from pathlib import Path
 from typing import NamedTuple, NoReturn, TextIO, TypedDict, cast
 
 
-__version__ = "0.2.6"
+__version__ = "0.2.7"
 
 
 # -------- ANSI --------
@@ -1083,14 +1083,19 @@ def _make_qbt_opener(base_url: str) -> tuple[urllib.request.OpenerDirector, http
     return opener, jar
 
 
+def _is_sid_cookie_name(name: str) -> bool:
+    """qBittorrent <5 used `SID`; v5+ uses `QBT_SID_<port>`."""
+    return name == "SID" or name.startswith("QBT_SID_")
+
+
 def _save_sid(jar: http.cookiejar.CookieJar) -> None:
-    """Extract the `SID` cookie from `jar` and write it to SID_PATH (mode 600)."""
-    sid: str | None = None
+    """Extract the session cookie from `jar` and write `name\\tvalue` to SID_PATH (mode 600)."""
+    pair: tuple[str, str] | None = None
     for cookie in jar:
-        if cookie.name == "SID":
-            sid = cookie.value
+        if _is_sid_cookie_name(cookie.name):
+            pair = (cookie.name, cookie.value)
             break
-    if sid is None:
+    if pair is None:
         return
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1098,19 +1103,25 @@ def _save_sid(jar: http.cookiejar.CookieJar) -> None:
             STATE_DIR.chmod(0o700)
         except OSError:
             pass
-        SID_PATH.write_text(sid)
+        SID_PATH.write_text(f"{pair[0]}\t{pair[1]}")
         SID_PATH.chmod(0o600)
-        log("INFO", f"saved SID to {SID_PATH}")
+        log("INFO", f"saved SID ({pair[0]}) to {SID_PATH}")
     except OSError as e:
         log("WARN", f"couldn't save SID to {SID_PATH}: {e}")
 
 
-def _load_sid() -> str | None:
+def _load_sid() -> tuple[str, str] | None:
+    """Return (cookie_name, value) or None. Legacy format (bare value) is read as ('SID', value)."""
     try:
-        sid = SID_PATH.read_text().strip()
-        return sid or None
+        raw = SID_PATH.read_text().strip()
     except OSError:
         return None
+    if not raw:
+        return None
+    if "\t" in raw:
+        name, value = raw.split("\t", 1)
+        return (name, value) if value else None
+    return ("SID", raw)
 
 
 def _drop_sid() -> None:
@@ -1136,8 +1147,8 @@ def _effective_cookie_host(host: str) -> str:
     return host + ".local"
 
 
-def _make_sid_cookie(host: str, sid: str, *, https: bool) -> http.cookiejar.Cookie:
-    """Build a CookieJar-eligible SID cookie for qBittorrent's WebUI.
+def _make_sid_cookie(host: str, name: str, value: str, *, https: bool) -> http.cookiejar.Cookie:
+    """Build a CookieJar-eligible session cookie for qBittorrent's WebUI.
 
     Three flags matter and got it wrong before:
       * `domain` must match cookielib's effective request host (see
@@ -1148,7 +1159,7 @@ def _make_sid_cookie(host: str, sid: str, *, https: bool) -> http.cookiejar.Cook
     Together with the above, the SID is actually attached to outgoing calls.
     """
     return http.cookiejar.Cookie(
-        version=0, name="SID", value=sid,
+        version=0, name=name, value=value,
         port=None, port_specified=False,
         domain=_effective_cookie_host(host), domain_specified=True, domain_initial_dot=False,
         path="/", path_specified=True,
@@ -1161,12 +1172,13 @@ def _make_sid_cookie(host: str, sid: str, *, https: bool) -> http.cookiejar.Cook
 
 def _try_qbt_sid(base_url: str) -> QbtSession | None:
     """Resume a qBittorrent session from the cached SID. None if no SID or it's dead."""
-    sid = _load_sid()
-    if sid is None:
+    loaded = _load_sid()
+    if loaded is None:
         return None
+    name, value = loaded
     opener, jar = _make_qbt_opener(base_url)
     host = urllib.parse.urlparse(base_url).hostname or ""
-    jar.set_cookie(_make_sid_cookie(host, sid, https=base_url.startswith("https://")))
+    jar.set_cookie(_make_sid_cookie(host, name, value, https=base_url.startswith("https://")))
     sess = QbtSession(opener, base_url)
     if sess.is_alive():
         log("INFO", "resumed qBittorrent session via cached SID")
@@ -1240,11 +1252,28 @@ def qbt_login(base_url: str, username: str, password: str) -> tuple[QbtSession |
     try:
         with opener.open(req, timeout=10) as resp:
             body = resp.read().decode().strip()
+            set_cookie_headers = resp.headers.get_all("Set-Cookie") or []
+    except urllib.error.HTTPError as e:
+        return None, f"login: HTTP {e.code} {e.reason}"
     except urllib.error.URLError as e:
         return None, f"can't reach qBittorrent at {base_url}: {e}"
-    log("INFO", f"  -> {body}")
-    if body != "Ok.":
-        return None, f"login: qBittorrent returned {body!r}"
+    log("INFO", f"  -> body={body!r} set-cookie={set_cookie_headers!r}")
+    # qBittorrent <5 returned "Ok."/"Fails."; v5+ returns HTTP 200 + empty body on success.
+    # cookielib silently drops the session cookie for `localhost` (eff-host munging — see
+    # `_effective_cookie_host`), so we extract it from the raw Set-Cookie headers and
+    # re-inject through `_make_sid_cookie` which mirrors that munging. The cookie name is
+    # `SID` for v<5 and `QBT_SID_<port>` for v5+.
+    sid_name: str | None = None
+    sid_value: str | None = None
+    for raw in set_cookie_headers:
+        m = re.match(r"\s*([^=\s;]+)=([^;]*)", raw)
+        if m and _is_sid_cookie_name(m.group(1)):
+            sid_name, sid_value = m.group(1), m.group(2)
+            break
+    if sid_name is None or sid_value is None:
+        return None, f"login: no SID cookie in response (body={body!r})"
+    host = urllib.parse.urlparse(base_url).hostname or ""
+    jar.set_cookie(_make_sid_cookie(host, sid_name, sid_value, https=base_url.startswith("https://")))
     _save_sid(jar)
     return QbtSession(opener, base_url), None
 
@@ -1574,6 +1603,28 @@ def do_subscribe(qbt: QbtSession, feed_url: str, name: str, save_base: str) -> N
     qbt.post("/api/v2/rss/setRule", ruleName=name, ruleDef=json.dumps(rule))
 
 
+def _torrents_add_error(body: str) -> str | None:
+    """Return an error message if the add response indicates failure, else None.
+
+    qBittorrent <5 returns the literal `Ok.` on success. v5+ returns JSON like
+    `{"success_count":N,"pending_count":N,"failure_count":N,"added_torrent_ids":[...]}`,
+    where `pending_count` is async work that will land shortly — also success.
+    """
+    body = body.strip()
+    if body == "Ok.":
+        return None
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return f"qBittorrent torrents/add returned {body!r}"
+    if not isinstance(data, dict):
+        return f"qBittorrent torrents/add returned {body!r}"
+    failure = int(data.get("failure_count", 0) or 0)
+    if failure:
+        return f"qBittorrent torrents/add reported {failure} failure(s): {body!r}"
+    return None
+
+
 def do_download(qbt: QbtSession, links: list[str], name: str, save_base: str) -> None:
     save_path = os.path.join(save_base, name)
     print(f"{C_CYN}==>{C_OFF} adding {len(links)} torrent(s) -> {save_path}")
@@ -1582,16 +1633,18 @@ def do_download(qbt: QbtSession, links: list[str], name: str, save_base: str) ->
         urls="\n".join(links),
         savepath=save_path,
     )
-    if body.strip() != "Ok.":
-        die(f"qBittorrent torrents/add returned {body!r}")
+    err = _torrents_add_error(body)
+    if err:
+        die(err)
 
 
 def do_movie(qbt: QbtSession, title: str, link: str, movie_path: str) -> None:
     print(f"{C_CYN}==>{C_OFF} downloading movie -> {movie_path}")
     print(f"    {C_DIM}{title}{C_OFF}")
     body = qbt.post("/api/v2/torrents/add", urls=link, savepath=movie_path)
-    if body.strip() != "Ok.":
-        die(f"qBittorrent torrents/add returned {body!r}")
+    err = _torrents_add_error(body)
+    if err:
+        die(err)
 
 
 # -------- query / remove / sync --------
