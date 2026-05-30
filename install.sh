@@ -65,16 +65,37 @@ fi
 
 [ -f "$REPO_DIR/anirss" ] || err "anirss script not found at $REPO_DIR/anirss"
 
-# --- install or refresh the binary ---
-mkdir -p "$BIN_DIR"
+# --- install or refresh launcher + library ---
+# Layout:
+#   $LIB_DIR/anirss       launcher (executable)
+#   $LIB_DIR/anirss_lib/  Python package
+#   $BIN_DIR/anirss       symlink -> $LIB_DIR/anirss
+# The launcher resolves its own path via os.path.realpath, so the symlink
+# from $BIN_DIR works regardless of where $LIB_DIR lives.
+LIB_DIR="${ANIRSS_LIB_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/anirss}"
+mkdir -p "$BIN_DIR" "$LIB_DIR"
+
 if [ -L "$TARGET" ] && [ "$(readlink -f "$TARGET" 2>/dev/null)" = "$REPO_DIR/anirss" ]; then
-    ok "symlink at $TARGET — picks up changes automatically"
-elif [ -e "$TARGET" ]; then
-    install -m 755 "$REPO_DIR/anirss" "$TARGET"
-    ok "refreshed $TARGET"
+    ok "symlink at $TARGET — picks up repo changes automatically"
 else
-    install -m 755 "$REPO_DIR/anirss" "$TARGET"
-    ok "installed $TARGET"
+    install -m 755 "$REPO_DIR/anirss" "$LIB_DIR/anirss"
+    # Replace anirss_lib/ atomically: copy to .new then rename. Avoids a
+    # partially-updated directory if the copy is interrupted.
+    rm -rf "$LIB_DIR/anirss_lib.new"
+    cp -R "$REPO_DIR/anirss_lib" "$LIB_DIR/anirss_lib.new"
+    rm -rf "$LIB_DIR/anirss_lib"
+    mv "$LIB_DIR/anirss_lib.new" "$LIB_DIR/anirss_lib"
+    ok "installed launcher + library at $LIB_DIR"
+
+    if [ -L "$TARGET" ] || [ ! -e "$TARGET" ]; then
+        ln -sfn "$LIB_DIR/anirss" "$TARGET"
+        ok "symlinked $TARGET -> $LIB_DIR/anirss"
+    elif [ -f "$TARGET" ]; then
+        # Replace an older single-file install with a symlink.
+        rm -f "$TARGET"
+        ln -sfn "$LIB_DIR/anirss" "$TARGET"
+        ok "replaced single-file $TARGET with symlink to $LIB_DIR/anirss"
+    fi
 fi
 
 # --- PATH check ---

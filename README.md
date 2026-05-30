@@ -72,6 +72,32 @@ anirss --version            Print version.
 
 The `-R*` flags follow pacman-style modifier composition (`-n` deletes files, `-s` removes torrents from qB, both can be combined).
 
+### Non-interactive use
+
+For scripts, cron jobs, or anyone who already knows what they want, `anirss` can run without ever opening fzf or prompting:
+
+```sh
+# Subscribe straight from a search query
+ANIRSS_QBT_PASSWORD=... anirss --subscribe Frieren
+
+# Download the top 5 results by download count
+ANIRSS_QBT_PASSWORD=... anirss --download 5 "Frieren 1080p" --name Frieren
+
+# Download every match
+ANIRSS_QBT_PASSWORD=... anirss --download-all "Frieren 1080p"
+
+# Treat the top match as a movie (saves to movie_path)
+ANIRSS_QBT_PASSWORD=... anirss --movie "Some Movie 2024"
+
+# Pipe the password instead of using the env var
+echo "$pw" | anirss --password-stdin --subscribe Frieren
+
+# Subscribe to a prebuilt nyaa RSS URL without ever opening the action menu
+ANIRSS_QBT_PASSWORD=... anirss --subscribe -S "https://nyaa.si/?page=rss&q=Frieren"
+```
+
+`--subscribe`, `--download-all`, `--download N`, and `--movie` are mutually exclusive. Any one of them flips `anirss` into non-interactive mode: no fzf pickers, no `Name:` prompt (use `--name`, or the name is derived from the top result), and no password retry loop. Use the cached SID, the `ANIRSS_QBT_PASSWORD` env var, or one line read from stdin via `--password-stdin`. A `--password PW` CLI flag is intentionally not provided — `ps aux` and shell history both leak it.
+
 ### Tab completion
 
 Both packages (Brew, AUR) install a `zsh` completion at `…/zsh/site-functions/_anirss` and a `bash` completion at `…/bash-completion/completions/anirss`. From-source installs land them under `~/.local/share/`. Feed names auto-complete after `-R*` from the cache at `~/.local/state/anirss/feeds.txt`, refreshed on every successful qBittorrent login (or run `anirss -Sy` to force).

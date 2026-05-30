@@ -12,7 +12,10 @@ class Anirss < Formula
   def install
     python = Formula["python@3.13"].opt_bin/"python3.13"
     inreplace "anirss", "#!/usr/bin/env python3", "#!#{python}"
-    bin.install "anirss"
+    # Launcher and library live side-by-side; the launcher uses
+    # `os.path.realpath(__file__)` to find anirss_lib next to itself.
+    libexec.install "anirss", "anirss_lib"
+    bin.install_symlink libexec/"anirss"
     zsh_completion.install "completions/_anirss"
     bash_completion.install "completions/anirss.bash" => "anirss"
   end

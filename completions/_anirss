@@ -15,11 +15,18 @@ ops=(
     '-Q:list subscribed feeds'
     '-Qj:list subscribed feeds as JSON'
     '-S:subscribe to a URL (skip search/refine)'
+    '-Sh:subscribe — save under hidden_base'
     '-Sy:refresh the feed cache'
     '-R:remove feed + rule'
     '-Rs:remove + qB torrents (keep files)'
     '-Rn:remove + files (keep torrents)'
     '-Rns:remove + torrents + files'
+    '-Rh:remove from the hidden tree'
+    '-Rsh:remove + torrents, hidden tree'
+    '-Rnh:remove + files, hidden tree'
+    '-Rnsh:remove + torrents + files, hidden tree'
+    '-T:upload a local .torrent file'
+    '-Th:upload — save under hidden_base'
     '--noconfirm:skip the y/N prompt for -R*'
     '--no-seed:set qB to pause torrents at ratio 0'
     '--config:print resolved config and exit'
@@ -35,9 +42,10 @@ if (( CURRENT == 2 )); then
     return
 fi
 
-# After -R / -Rs / -Rn / -Rns: complete feed names from the cache.
+# After -R / -Rs / -Rn / -Rns / -R*h: complete feed names from the cache.
+# After -T / -Th: complete *.torrent files from the filesystem.
 case $words[2] in
-    (-R|-Rs|-Rn|-Rns)
+    (-R|-Rs|-Rn|-Rns|-Rh|-Rsh|-Rnh|-Rnsh)
         if [[ -f $cache ]]; then
             if [[ -n $(find $cache -mmin +1440 -print 2>/dev/null) ]]; then
                 _message -r '(feed cache may be stale — anirss -Sy)'
@@ -51,5 +59,8 @@ case $words[2] in
         else
             _message -r 'no cached feeds — run: anirss -Sy'
         fi
+        ;;
+    (-T|-Th)
+        _files -g '*.torrent'
         ;;
 esac
