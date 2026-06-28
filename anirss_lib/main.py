@@ -13,7 +13,7 @@ from anirss_lib.ansi import (
 from anirss_lib.cli.args import ParsedArgs, parse_cli_args, parse_op_flag
 from anirss_lib.cli.commands import cmd_query, cmd_remove, cmd_sync
 from anirss_lib.cli.pickers import (
-    ACT_BACK, ACT_CANCEL, ACT_DL_ALL, ACT_DL_PICK, ACT_MOVIE, ACT_SUB,
+    ACT_BACK, ACT_CANCEL, ACT_DL_ALL, ACT_DL_PICK, ACT_SUB,
     pick_action, pick_downloads, pick_movie,
 )
 from anirss_lib.cli.urls import UrlKind, classify_url, extract_nyaa_query
@@ -214,7 +214,8 @@ def _run_search_state_machine(initial_query: str, cfg: AnirssConfig
             state = "refine"
             continue
         if state == "refine":
-            query, selected, status = refine(query, selected, cfg["search"])
+            query, selected, status = refine(query, selected, cfg["search"],
+                                             cfg["bestfit"])
             if status == "back":
                 state = "search"
                 continue

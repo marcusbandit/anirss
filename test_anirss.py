@@ -10,6 +10,7 @@ import urllib.request
 
 import pytest
 
+from anirss_lib import bestfit
 from anirss_lib import config as _cfg
 from anirss_lib.cli import args as _cli_args
 from anirss_lib.cli.urls import UrlKind, classify_url, extract_nyaa_query
@@ -228,6 +229,73 @@ def test_build_refined_query_keeps_exclusions_at_the_tail():
     items = _items("Show HEVC 1080p", "Show HEVC 1080p")
     # A positive token slots in front of an existing `-exclusion`.
     assert build_refined_query('Show -bad', ["HEVC"], items) == 'Show HEVC -bad'
+
+
+# -------- bestfit (Try Best Fit) --------
+
+_BESTFIT_CFG = {
+    "preferred_groups": ["Erai-raws", "SubsPlease", "ASW"],
+    "source_order": ["WEB-DL", "WEB", "BluRay", "WEBRip", "HDTV"],
+    "preferred_resolution": "highest",
+}
+
+
+def test_source_of_detects_web_dl_over_bare_web():
+    assert bestfit.source_of("[X] Show 1080p WEB-DL") == ("WEB-DL", "WEB-DL")
+    assert bestfit.source_of("[X] Show 1080p WEBRip")[0] == "WEBRip"
+    assert bestfit.source_of("[X] Show 1080p BluRay")[0] == "BluRay"
+    assert bestfit.source_of("[X] Show 1080p") is None
+
+
+def test_source_of_returns_literal_match_for_pinning():
+    # The literal form (with whatever separator) is what gets pinned back.
+    assert bestfit.source_of("[X] Show 1080p WEBDL")[1] == "WEBDL"
+
+
+def test_resolution_and_subs_parsing():
+    assert bestfit.resolution_of("Show 1080p") == 1080
+    assert bestfit.resolution_of("Show 720p 1080p") == 1080  # highest wins
+    assert bestfit.resolution_of("Show no res") == 0
+    assert bestfit.has_subs("[X] Show 1080p WEB-DL MultiSub") is True
+    assert bestfit.has_subs("[X] Show 1080p WEB-DL") is False
+
+
+def test_best_item_prefers_web_dl_over_webrip():
+    items = _items("[Erai-raws] Show 1080p WEBRip", "[Erai-raws] Show 1080p WEB-DL")
+    best = bestfit.best_item(items, _BESTFIT_CFG)
+    assert best.title == "[Erai-raws] Show 1080p WEB-DL"
+
+
+def test_best_item_prefers_trusted_group():
+    items = _items("[Nobody] Show 1080p WEB-DL", "[Erai-raws] Show 720p WEBRip")
+    # Trusted group gates first, even at lower quality.
+    best = bestfit.best_item(items, _BESTFIT_CFG)
+    assert best.title == "[Erai-raws] Show 720p WEBRip"
+
+
+def test_best_item_prefers_highest_resolution_within_same_source():
+    items = _items("[Erai-raws] Show 720p WEB-DL", "[Erai-raws] Show 1080p WEB-DL")
+    best = bestfit.best_item(items, _BESTFIT_CFG)
+    assert best.title == "[Erai-raws] Show 1080p WEB-DL"
+
+
+def test_best_item_matches_the_users_example():
+    items = _items(
+        "[SubsPlease] Himekishi wa Barbaroi no Yome 1080p WEBRip",
+        "[Erai-raws] Himekishi wa Barbaroi no Yome 1080p WEB-DL MultiSub",
+        "[ASW] Himekishi wa Barbaroi no Yome 720p WEB-DL",
+        "[Nobody] Himekishi wa Barbaroi no Yome 2160p WEBRip",
+    )
+    best = bestfit.best_item(items, _BESTFIT_CFG)
+    assert best.title == "[Erai-raws] Himekishi wa Barbaroi no Yome 1080p WEB-DL MultiSub"
+    assert bestfit.profile_tokens(best) == ["[Erai-raws]", "1080p", "WEB-DL"]
+
+
+def test_preferred_resolution_target_avoids_4k():
+    cfg = {**_BESTFIT_CFG, "preferred_resolution": "1080"}
+    items = _items("[Erai-raws] Show 2160p WEB-DL", "[Erai-raws] Show 1080p WEB-DL")
+    best = bestfit.best_item(items, cfg)
+    assert best.title == "[Erai-raws] Show 1080p WEB-DL"
 
 
 # -------- add_exclude_to_query --------

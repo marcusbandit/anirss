@@ -37,6 +37,12 @@ class SearchConfig(TypedDict):
     filter: str
 
 
+class BestfitConfig(TypedDict):
+    preferred_groups: list[str]
+    source_order: list[str]
+    preferred_resolution: str
+
+
 class LoggingConfig(TypedDict):
     log_path: str
 
@@ -50,6 +56,7 @@ class AnirssConfig(TypedDict):
     qbittorrent: QbtConfig
     downloads: DownloadsConfig
     search: SearchConfig
+    bestfit: BestfitConfig
     logging: LoggingConfig
     display: DisplayConfig
 
@@ -78,6 +85,17 @@ nyaa_url = "https://nyaa.si/"
 category = "1_0"
 # nyaa filter: "0" = no filter, "1" = no remakes, "2" = trusted only
 filter = "0"
+
+[bestfit]
+# "[★ Try Best Fit]" in the refine picker auto-pins the best quality profile
+# (group + resolution + source) and refetches nyaa for every matching release.
+# Release groups ranked most-to-least trusted; the first listed wins ties.
+preferred_groups = ["Erai-raws", "SubsPlease", "ASW", "EMBER", "Judas"]
+# Source types best-to-worst. WEB-DL always beats WebRip; reorder to taste.
+source_order = ["WEB-DL", "WEB", "BluRay", "WEBRip", "HDTV"]
+# "highest" picks the sharpest available (2160p > 1080p > 720p). Set to a
+# number like "1080" to treat that as the sweet spot and avoid huge 4K files.
+preferred_resolution = "highest"
 
 [logging]
 log_path = "~/.local/state/anirss/anirss.log"

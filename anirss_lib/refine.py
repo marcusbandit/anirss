@@ -6,9 +6,11 @@ import sys
 from collections import Counter, defaultdict
 from statistics import median
 
-from anirss_lib.ansi import C_BLD, C_DIM, C_GRN, C_OFF, C_RED, C_YEL, ansi_strip
-from anirss_lib import responsive, terminal
-from anirss_lib.config import SearchConfig
+from anirss_lib.ansi import (
+    C_BLD, C_CYN, C_DIM, C_GRN, C_OFF, C_RED, C_YEL, ansi_strip,
+)
+from anirss_lib import bestfit, responsive, terminal
+from anirss_lib.config import BestfitConfig, SearchConfig
 from anirss_lib.format import colorize_picker_label, show_titles
 from anirss_lib.fzf import fzf_pick_with_query, view_all_titles
 from anirss_lib.logging import log
@@ -16,12 +18,14 @@ from anirss_lib.nyaa import fetch_items
 from anirss_lib.readline_input import prompt
 from anirss_lib.titles import RES_RE, poster_of, title_tokens
 from anirss_lib.types import (
-    Group, Item, PICK_BACK, PICK_DONE, PICK_EXCLUDE, PICK_SHOW_ALL, Pick,
+    Group, Item, PICK_BACK, PICK_BEST_FIT, PICK_DONE, PICK_EXCLUDE,
+    PICK_SHOW_ALL, Pick,
 )
 
 
 DONE = "[→ Continue To Actions]"
 EXCLUDE = "[✗ Exclude Term…]"
+BEST_FIT = "[★ Try Best Fit]"
 
 
 # --- SIGWINCH redraw of the title list -------------------------------
@@ -150,6 +154,7 @@ def pick_group(groups: list[Group], selected: list[Item],
     show_all_label = f"[≡ Show All {n_results} Titles]"
     label_width = 28
     options = [
+        f"{C_CYN}{BEST_FIT}{C_OFF}",
         f"{C_YEL}{show_all_label}{C_OFF}",
         f"{C_GRN}{DONE}{C_OFF}",
         f"{C_RED}{EXCLUDE}{C_OFF}",
@@ -176,6 +181,8 @@ def pick_group(groups: list[Group], selected: list[Item],
         return PICK_DONE
     if choice_plain == EXCLUDE:
         return PICK_EXCLUDE
+    if choice_plain == BEST_FIT:
+        return PICK_BEST_FIT
     if choice_plain == show_all_label:
         return PICK_SHOW_ALL
     chosen_label = choice_plain.rsplit(" (", 1)[0].rstrip()
@@ -273,8 +280,8 @@ def add_term_to_query(query: str, term: str) -> str:
     return f"{query} {flag}"
 
 
-def refine(initial_query: str, items: list[Item], search: SearchConfig
-           ) -> tuple[str, list[Item], str]:
+def refine(initial_query: str, items: list[Item], search: SearchConfig,
+           bestfit_cfg: BestfitConfig) -> tuple[str, list[Item], str]:
     """Return (final_query, list of Items, status) after interactive refinement.
     `status` is "done" if the user finalized, or "back" if Esc was pressed to
     return to the search step. Caller must ensure `items` is non-empty.
@@ -289,7 +296,7 @@ def refine(initial_query: str, items: list[Item], search: SearchConfig
 
     _PREV_WINCH_HANDLER = signal.signal(signal.SIGWINCH, _on_sigwinch)
     try:
-        return _refine_loop(query, selected, search)
+        return _refine_loop(query, selected, search, bestfit_cfg)
     finally:
         _CURRENT_FRAME = None
         if _PREV_WINCH_HANDLER is not None:
@@ -297,8 +304,8 @@ def refine(initial_query: str, items: list[Item], search: SearchConfig
         _PREV_WINCH_HANDLER = None
 
 
-def _refine_loop(query: str, selected: list[Item], search: SearchConfig
-                 ) -> tuple[str, list[Item], str]:
+def _refine_loop(query: str, selected: list[Item], search: SearchConfig,
+                 bestfit_cfg: BestfitConfig) -> tuple[str, list[Item], str]:
     """The original refine loop body; extracted so refine() can wrap it
     in signal-handler setup/teardown via try/finally.
     """
@@ -333,6 +340,30 @@ def _refine_loop(query: str, selected: list[Item], search: SearchConfig
             return query, selected, "back"
         if pick.kind == "show_all":
             view_all_titles(selected)
+            continue
+        if pick.kind == "best_fit":
+            best = bestfit.best_item(selected, bestfit_cfg)
+            if best is None:
+                continue
+            tokens = [t for t in bestfit.profile_tokens(best)
+                      if t.lower() not in query.lower()]
+            if not tokens:
+                print(f"{C_DIM}already at the best fit for these results{C_OFF}")
+                log("INFO", "best-fit: query already pins the top profile")
+                continue
+            new_query = build_refined_query(query, tokens, selected)
+            print(f"{C_CYN}best fit:{C_OFF} {' '.join(tokens)}")
+            print(f"{C_DIM}refetching nyaa with {new_query!r}...{C_OFF}")
+            new_items = fetch_items(new_query, search)
+            if not new_items:
+                print(f"{C_YEL}best fit returns 0 results — skipped{C_OFF}")
+                log("WARN", f"best-fit {tokens!r} → 0 results — reverted")
+                continue
+            delta = len(new_items) - len(selected)
+            print(f"{C_YEL}nyaa returned {len(new_items)} (was {len(selected)}, "
+                  f"{delta:+d}){C_OFF}")
+            query, selected = new_query, new_items
+            log("INFO", f"after best-fit {tokens!r}: {len(selected)} results, query={query!r}")
             continue
         if pick.kind == "custom":
             term = pick.tokens[0]
