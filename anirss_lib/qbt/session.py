@@ -10,7 +10,7 @@ import urllib.parse
 import urllib.request
 
 from anirss_lib.ansi import C_BLD, C_GRN, C_OFF, C_RED, C_YEL
-from anirss_lib.config import QbtConfig, SID_PATH, STATE_DIR
+from anirss_lib.config import PASS_PATH, QbtConfig, SID_PATH, STATE_DIR
 from anirss_lib.logging import die, log
 
 
@@ -179,6 +179,61 @@ def _drop_sid() -> None:
         pass
 
 
+# -------- password persistence --------
+# Stored at the same protection level as the SID cookie above (mode-600 file in
+# a 700 state dir). A valid SID is already full WebUI access, so the password
+# sits at the trust level the cache already assumes.
+
+def _save_password(password: str) -> bool:
+    """Write `password` to PASS_PATH (mode 600). Returns True on success."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            STATE_DIR.chmod(0o700)
+        except OSError:
+            pass
+        PASS_PATH.write_text(password)
+        PASS_PATH.chmod(0o600)
+        log("INFO", f"saved qBittorrent password to {PASS_PATH}")
+        return True
+    except OSError as e:
+        log("WARN", f"couldn't save password to {PASS_PATH}: {e}")
+        return False
+
+
+def _load_password() -> str | None:
+    """Return the saved password, or None if there isn't one. Tolerates a
+    trailing newline so `echo pw > qbt.pass` also works."""
+    try:
+        raw = PASS_PATH.read_text()
+    except OSError:
+        return None
+    return raw.rstrip("\n") or None
+
+
+def _drop_password() -> None:
+    try:
+        PASS_PATH.unlink()
+        log("INFO", f"dropped saved password at {PASS_PATH}")
+    except OSError:
+        pass
+
+
+def _offer_to_save_password(password: str) -> None:
+    """After a manual login, ask whether to remember the password. Only reached
+    when nothing usable was saved, so a 'yes' here is always a fresh save."""
+    try:
+        answer = input("Save this password so you won't be asked again? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if answer not in ("y", "yes"):
+        return
+    if _save_password(password):
+        print(f"{C_GRN}saved.{C_OFF} Future logins reuse it until it stops working.")
+    else:
+        print(f"{C_YEL}couldn't save the password — check the log; you'll be asked again next time{C_OFF}")
+
+
 def _effective_cookie_host(host: str) -> str:
     """Mirror cookielib's `eff_request_host()` munging.
 
@@ -273,13 +328,33 @@ def qbt_login(base_url: str, username: str, password: str
 
 
 def login_with_retry(qbt_cfg: QbtConfig) -> QbtSession:
-    """Interactive login: try SID cache, then prompt for password with retry loop."""
+    """Interactive login: SID cache, then a saved password, then prompt with retry.
+
+    When the cached session cookie is dead we try a saved password first so the
+    common case is silent. If that password is rejected (e.g. it changed on the
+    server) we say so, drop it, and fall through to the prompt loop, offering to
+    remember whatever the user types next.
+    """
     base_url = qbt_cfg["url"]
     username = qbt_cfg["username"]
     retries = int(qbt_cfg["login_retries"])
+    use_saved = qbt_cfg["save_password"]
     sess = _try_qbt_sid(base_url)
     if sess is not None:
         return sess
+
+    if use_saved:
+        saved = _load_password()
+        if saved:
+            qbt, err = qbt_login(base_url, username, saved)
+            if qbt is not None:
+                log("INFO", "logged in with saved password")
+                return qbt
+            print(f"{C_YEL}saved qBittorrent password was rejected "
+                  f"(did it change on the server?) — removing it{C_OFF}")
+            log("WARN", f"saved password rejected: {err}")
+            _drop_password()
+
     for attempt in range(1, retries + 1):
         try:
             password = getpass.getpass(f"qBittorrent password ({attempt}/{retries}): ")
@@ -290,20 +365,25 @@ def login_with_retry(qbt_cfg: QbtConfig) -> QbtSession:
             continue
         qbt, err = qbt_login(base_url, username, password)
         if qbt is not None:
+            if use_saved:
+                _offer_to_save_password(password)
             return qbt
         print(f"{C_RED}{err}{C_OFF}")
     die(f"login failed after {retries} attempts")
 
 
 def login_with_password(qbt_cfg: QbtConfig, password: str) -> QbtSession:
-    """Non-interactive login: SID cache, then a single password attempt.
-    No prompts, no retry loop. Used by the non-interactive flag flow.
+    """Non-interactive login: SID cache, then the given password, then a saved
+    password. No prompts, no retry loop. Used by the non-interactive flag flow.
     """
     sess = _try_qbt_sid(qbt_cfg["url"])
     if sess is not None:
         return sess
+    if not password and qbt_cfg["save_password"]:
+        password = _load_password() or ""
     if not password:
-        die("qBittorrent login required (set ANIRSS_QBT_PASSWORD or use --password-stdin)")
+        die("qBittorrent login required (set ANIRSS_QBT_PASSWORD, use "
+            "--password-stdin, or save a password from an interactive run)")
     qbt, err = qbt_login(qbt_cfg["url"], qbt_cfg["username"], password)
     if qbt is None:
         die(err or "qBittorrent login failed")

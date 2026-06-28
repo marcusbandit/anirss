@@ -15,6 +15,7 @@ from anirss_lib.logging import die
 CONFIG_PATH = Path("~/.config/anirss/config.toml").expanduser()
 STATE_DIR = Path("~/.local/state/anirss").expanduser()
 SID_PATH = STATE_DIR / "qbt.sid"
+PASS_PATH = STATE_DIR / "qbt.pass"
 FEEDS_CACHE_PATH = STATE_DIR / "feeds.txt"
 FEED_CACHE_TTL_SECONDS = 24 * 60 * 60
 
@@ -23,6 +24,7 @@ class QbtConfig(TypedDict):
     url: str
     username: str
     login_retries: int
+    save_password: bool
 
 
 class DownloadsConfig(TypedDict):
@@ -67,8 +69,14 @@ DEFAULT_CONFIG_TOML = """\
 [qbittorrent]
 url = "http://localhost:8080"
 username = "admin"
-# password attempts before giving up; the password itself is always prompted
+# password attempts before giving up
 login_retries = 3
+# After a successful login, offer to remember the password in a mode-600 file
+# (~/.local/state/anirss/qbt.pass) and reuse it automatically when the cached
+# session cookie expires. Set to false to always prompt and ignore any saved
+# password. If a saved password is later rejected, it's dropped and you're
+# told the password likely changed.
+save_password = true
 
 [downloads]
 # Subscriptions and bulk downloads create a per-name subdirectory under this.

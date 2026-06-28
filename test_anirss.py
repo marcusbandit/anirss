@@ -15,6 +15,7 @@ from anirss_lib import config as _cfg
 from anirss_lib.cli import args as _cli_args
 from anirss_lib.cli.urls import UrlKind, classify_url, extract_nyaa_query
 from anirss_lib.qbt import feeds as _feeds
+from anirss_lib.qbt import session as _session
 from anirss_lib.qbt.actions import _human_bytes, _norm_path
 from anirss_lib.qbt.session import _effective_cookie_host, _make_sid_cookie
 from anirss_lib.refine import (
@@ -296,6 +297,130 @@ def test_preferred_resolution_target_avoids_4k():
     items = _items("[Erai-raws] Show 2160p WEB-DL", "[Erai-raws] Show 1080p WEB-DL")
     best = bestfit.best_item(items, cfg)
     assert best.title == "[Erai-raws] Show 1080p WEB-DL"
+
+
+# -------- saved password persistence --------
+
+def _qbt_cfg(**over):
+    cfg = {"url": "http://x", "username": "admin",
+           "login_retries": 3, "save_password": True}
+    cfg.update(over)
+    return cfg
+
+
+def _patch_pass_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(_session, "PASS_PATH", tmp_path / "qbt.pass")
+    monkeypatch.setattr(_session, "STATE_DIR", tmp_path)
+
+
+def test_password_save_load_roundtrip(tmp_path, monkeypatch):
+    _patch_pass_path(monkeypatch, tmp_path)
+    assert _session._load_password() is None
+    assert _session._save_password("hunter2") is True
+    assert _session._load_password() == "hunter2"
+
+
+def test_password_file_is_mode_600(tmp_path, monkeypatch):
+    import os
+    import stat
+    _patch_pass_path(monkeypatch, tmp_path)
+    _session._save_password("secret")
+    mode = stat.S_IMODE(os.stat(tmp_path / "qbt.pass").st_mode)
+    assert mode == 0o600
+
+
+def test_password_load_tolerates_trailing_newline(tmp_path, monkeypatch):
+    _patch_pass_path(monkeypatch, tmp_path)
+    (tmp_path / "qbt.pass").write_text("secret\n")
+    assert _session._load_password() == "secret"
+
+
+def test_drop_password_removes_file(tmp_path, monkeypatch):
+    _patch_pass_path(monkeypatch, tmp_path)
+    (tmp_path / "qbt.pass").write_text("x")
+    _session._drop_password()
+    assert not (tmp_path / "qbt.pass").exists()
+
+
+def test_login_uses_saved_password_without_prompting(tmp_path, monkeypatch):
+    _patch_pass_path(monkeypatch, tmp_path)
+    (tmp_path / "qbt.pass").write_text("saved-pw")
+    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
+    seen = {}
+
+    def fake_login(base, user, pw):
+        seen["pw"] = pw
+        return _session.QbtSession(object(), base), None
+
+    monkeypatch.setattr(_session, "qbt_login", fake_login)
+
+    def boom(*a, **k):
+        raise AssertionError("must not prompt when the saved password works")
+
+    monkeypatch.setattr(_session.getpass, "getpass", boom)
+    sess = _session.login_with_retry(_qbt_cfg())
+    assert isinstance(sess, _session.QbtSession)
+    assert seen["pw"] == "saved-pw"
+
+
+def test_login_drops_rejected_saved_password_and_reprompts(tmp_path, monkeypatch):
+    _patch_pass_path(monkeypatch, tmp_path)
+    pass_path = tmp_path / "qbt.pass"
+    pass_path.write_text("old-pw")
+    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
+    calls = []
+
+    def fake_login(base, user, pw):
+        calls.append(pw)
+        if pw == "old-pw":
+            return None, "Fails."
+        return _session.QbtSession(object(), base), None
+
+    monkeypatch.setattr(_session, "qbt_login", fake_login)
+    monkeypatch.setattr(_session.getpass, "getpass", lambda prompt="": "new-pw")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")  # decline saving
+    sess = _session.login_with_retry(_qbt_cfg())
+    assert isinstance(sess, _session.QbtSession)
+    assert calls == ["old-pw", "new-pw"]
+    assert not pass_path.exists()  # the rejected password was dropped
+
+
+def test_login_offers_and_saves_new_password(tmp_path, monkeypatch):
+    _patch_pass_path(monkeypatch, tmp_path)
+    pass_path = tmp_path / "qbt.pass"
+    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
+    monkeypatch.setattr(
+        _session, "qbt_login",
+        lambda base, user, pw: (_session.QbtSession(object(), base), None))
+    monkeypatch.setattr(_session.getpass, "getpass", lambda prompt="": "typed-pw")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")  # accept saving
+    sess = _session.login_with_retry(_qbt_cfg())
+    assert isinstance(sess, _session.QbtSession)
+    assert pass_path.read_text() == "typed-pw"
+
+
+def test_login_respects_save_password_false(tmp_path, monkeypatch):
+    _patch_pass_path(monkeypatch, tmp_path)
+    pass_path = tmp_path / "qbt.pass"
+    pass_path.write_text("saved-pw")
+    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
+    calls = []
+
+    def fake_login(base, user, pw):
+        calls.append(pw)
+        return _session.QbtSession(object(), base), None
+
+    monkeypatch.setattr(_session, "qbt_login", fake_login)
+    monkeypatch.setattr(_session.getpass, "getpass", lambda prompt="": "typed-pw")
+
+    def no_offer(prompt=""):
+        raise AssertionError("must not offer to save when save_password is false")
+
+    monkeypatch.setattr("builtins.input", no_offer)
+    sess = _session.login_with_retry(_qbt_cfg(save_password=False))
+    assert isinstance(sess, _session.QbtSession)
+    assert calls == ["typed-pw"]          # saved password ignored, prompt used
+    assert pass_path.read_text() == "saved-pw"  # left untouched
 
 
 # -------- add_exclude_to_query --------
