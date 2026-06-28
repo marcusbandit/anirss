@@ -1,8 +1,10 @@
 """Interactive refinement loop and its building blocks."""
 
+import re
 import signal
 import sys
 from collections import Counter, defaultdict
+from statistics import median
 
 from anirss_lib.ansi import C_BLD, C_DIM, C_GRN, C_OFF, C_RED, C_YEL, ansi_strip
 from anirss_lib import responsive, terminal
@@ -184,24 +186,73 @@ def pick_group(groups: list[Group], selected: list[Item],
     return Pick("tokens", chosen.tokens)
 
 
-def apply_pick(selected: list[Item], query: str, tokens: list[str]
-               ) -> tuple[list[Item], str] | None:
-    """Filter `selected` and extend `query` with `tokens`. Return None if filter yields 0."""
-    new_selected = list(selected)
-    for token in tokens:
-        if token.startswith("["):
-            new_selected = [item for item in new_selected if poster_of(item.title) == token]
-        else:
-            new_selected = [item for item in new_selected if token in title_tokens(item.title)]
-    if not new_selected:
-        return None
+# Split a query into fields, keeping a `"quoted phrase"` (with an optional
+# leading `-`) as one field so rebuilding round-trips the original quoting.
+_FIELD_RE = re.compile(r'-?"[^"]*"|\S+')
+
+
+def _field_text(field: str) -> str:
+    """The matchable core of a query field: drop a leading `-` and any quotes."""
+    core = field[1:] if field.startswith("-") else field
+    if len(core) >= 2 and core[0] == '"' and core[-1] == '"':
+        core = core[1:-1]
+    return core.lower()
+
+
+def _title_position(text: str, selected: list[Item]) -> float:
+    """Median index at which `text` appears across the selected titles.
+
+    inf when no title contains it. Using the median (rather than one sample)
+    keeps the ordering stable when release groups format titles differently.
+    """
+    spots = [
+        item.title.lower().index(text)
+        for item in selected
+        if text and text in item.title.lower()
+    ]
+    return median(spots) if spots else float("inf")
+
+
+def _insert_positional(query: str, token: str, selected: list[Item]) -> str:
+    """Slot `token` into `query` ahead of the first existing field that occurs
+    *later* in the titles, so the query mirrors real release-name order (e.g.
+    1080p before multisub) instead of being blindly appended. Posters are never
+    crossed; exclusions (`-tag`) always stay at the tail.
+    """
+    fields = _FIELD_RE.findall(query)
+    token_pos = _title_position(token.lower(), selected)
+    insert_at = len(fields)
+    for i, field in enumerate(fields):
+        if field.startswith("["):          # never slot in front of a poster
+            continue
+        if field.startswith("-"):          # exclusions stay at the end
+            insert_at = i
+            break
+        if _title_position(_field_text(field), selected) > token_pos:
+            insert_at = i
+            break
+    fields.insert(insert_at, token)
+    return " ".join(fields)
+
+
+def build_refined_query(query: str, tokens: list[str], selected: list[Item]
+                        ) -> str:
+    """Extend `query` with `tokens`, each placed where it belongs.
+
+    A poster (`[...]`) leads the title, so it goes to the front unless the query
+    already starts with one. Every other token is positioned by where it occurs
+    in the titles (see `_insert_positional`). Returns the rebuilt query string;
+    the caller refetches nyaa with it rather than filtering locally, so episodes
+    beyond the first RSS page can surface.
+    """
     new_query = query
     for token in tokens:
-        if token.startswith("[") and not new_query.lstrip().startswith("["):
-            new_query = f"{token} {new_query}"
-        elif not token.startswith("["):
-            new_query = f"{new_query} {token}"
-    return new_selected, new_query
+        if token.startswith("["):
+            if not new_query.lstrip().startswith("["):
+                new_query = f"{token} {new_query}"
+            continue
+        new_query = _insert_positional(new_query, token, selected)
+    return new_query
 
 
 def add_exclude_to_query(query: str, term: str) -> str:
@@ -323,13 +374,22 @@ def _refine_loop(query: str, selected: list[Item], search: SearchConfig
             log("INFO", f"after exclude {term!r}: {len(selected)} results, query={query!r}")
             continue
 
-        result = apply_pick(selected, query, pick.tokens)
-        if result is None:
-            print(f"{C_YEL}filter would yield 0 results — skipped{C_OFF}")
-            log("WARN", f"tokens {pick.tokens!r} would yield 0 — skipped")
+        # Picking a token refetches nyaa with the extended query (like the
+        # custom/exclude paths) instead of filtering the already-fetched page.
+        # The first RSS page only holds the most-recent matches, so a narrower
+        # query surfaces episodes the broad search never returned.
+        new_query = build_refined_query(query, pick.tokens, selected)
+        print(f"{C_DIM}refetching nyaa with {new_query!r}...{C_OFF}")
+        new_items = fetch_items(new_query, search)
+        if not new_items:
+            print(f"{C_YEL}that filter returns 0 results — skipped{C_OFF}")
+            log("WARN", f"tokens {pick.tokens!r} → 0 results — skipped")
             continue
-        selected, query = result
-        log("INFO", f"after pick: {len(selected)} results, query={query!r}")
+        delta = len(new_items) - len(selected)
+        print(f"{C_YEL}nyaa returned {len(new_items)} (was {len(selected)}, "
+              f"{delta:+d}){C_OFF}")
+        query, selected = new_query, new_items
+        log("INFO", f"after pick {pick.tokens!r}: {len(selected)} results, query={query!r}")
 
     print()
     print(f"{C_GRN}{C_BLD}Final query:{C_OFF} {query}")

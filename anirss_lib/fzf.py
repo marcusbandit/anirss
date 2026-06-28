@@ -113,6 +113,10 @@ def fzf_pick_with_query(options: list[str], header: str,
         "--height", final_height,
         "--cycle", "--no-info",
         "--print-query",
+        # Don't grab the mouse: tmux/the terminal keeps it, so the Query line
+        # printed above the picker stays drag-selectable (copy/paste). The
+        # tradeoff is no click-to-pick on options — arrow keys + Enter still work.
+        "--no-mouse",
         "--preview-window=hidden",
         "--expect", "ctrl-c",
     ]

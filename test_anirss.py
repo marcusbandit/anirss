@@ -17,7 +17,7 @@ from anirss_lib.qbt import feeds as _feeds
 from anirss_lib.qbt.actions import _human_bytes, _norm_path
 from anirss_lib.qbt.session import _effective_cookie_host, _make_sid_cookie
 from anirss_lib.refine import (
-    add_exclude_to_query, apply_pick, auto_resolution, compute_groups,
+    add_exclude_to_query, auto_resolution, build_refined_query, compute_groups,
 )
 from anirss_lib.titles import poster_of, show_name, title_tokens
 from anirss_lib.types import Item
@@ -190,51 +190,44 @@ def test_compute_groups_sorts_poster_groups_first():
         assert poster_idx < min(non_poster_idxs)
 
 
-# -------- apply_pick --------
+# -------- build_refined_query --------
 
-def test_apply_pick_filters_by_poster_and_prepends_query():
+def test_build_refined_query_prepends_poster():
     items = _items("[A] Show 1080p", "[B] Show 1080p")
-    result = apply_pick(items, "Show", ["[A]"])
-    assert result is not None
-    selected, query = result
-    assert len(selected) == 1
-    assert selected[0].title == "[A] Show 1080p"
-    assert query == "[A] Show"
+    assert build_refined_query("Show", ["[A]"], items) == "[A] Show"
 
 
-def test_apply_pick_filters_by_token_and_appends_query():
+def test_build_refined_query_appends_token_when_query_is_just_the_name():
     items = _items("Show HEVC 1080p", "Show 1080p")
-    result = apply_pick(items, "Show", ["HEVC"])
-    assert result is not None
-    selected, query = result
-    assert len(selected) == 1
-    assert selected[0].title == "Show HEVC 1080p"
-    assert query == "Show HEVC"
+    assert build_refined_query("Show", ["HEVC"], items) == "Show HEVC"
 
 
-def test_apply_pick_returns_none_when_filter_yields_empty():
+def test_build_refined_query_does_not_double_prepend_poster():
     items = _items("[A] Show 1080p")
-    result = apply_pick(items, "Show", ["[B]"])
-    assert result is None
+    # Query already starts with a poster — the second one should not prepend.
+    assert build_refined_query("[X] Show", ["[A]"], items) == "[X] Show"
 
 
-def test_apply_pick_does_not_double_prepend_poster():
-    items = _items("[A] Show 1080p")
-    result = apply_pick(items, "[X] Show", ["[A]"])
-    assert result is not None
-    _, query = result
-    # Query already starts with a poster — second one should not prepend.
-    assert query == "[X] Show"
-
-
-def test_apply_pick_combined_tokens():
+def test_build_refined_query_combined_tokens():
     items = _items("[A] Show HEVC 1080p", "[A] Show 1080p", "[B] Show HEVC 1080p")
-    result = apply_pick(items, "Show", ["[A]", "HEVC"])
-    assert result is not None
-    selected, query = result
-    assert len(selected) == 1
-    assert selected[0].title == "[A] Show HEVC 1080p"
-    assert query == "[A] Show HEVC"
+    assert build_refined_query("Show", ["[A]", "HEVC"], items) == "[A] Show HEVC"
+
+
+def test_build_refined_query_inserts_token_in_title_order():
+    # In the titles 1080p precedes multisub, so adding 1080p to a query that
+    # already carries multisub must slot it *before* multisub, not append it.
+    items = _items(
+        "[A] Show 1080p multisub",
+        "[B] Show 1080p multisub",
+        "[C] Show 1080p multisub",
+    )
+    assert build_refined_query("Show multisub", ["1080p"], items) == "Show 1080p multisub"
+
+
+def test_build_refined_query_keeps_exclusions_at_the_tail():
+    items = _items("Show HEVC 1080p", "Show HEVC 1080p")
+    # A positive token slots in front of an existing `-exclusion`.
+    assert build_refined_query('Show -bad', ["HEVC"], items) == 'Show HEVC -bad'
 
 
 # -------- add_exclude_to_query --------
