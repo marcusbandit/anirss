@@ -282,14 +282,27 @@ def test_best_item_prefers_highest_resolution_within_same_source():
 
 def test_best_item_matches_the_users_example():
     items = _items(
-        "[SubsPlease] Himekishi wa Barbaroi no Yome 1080p WEBRip",
-        "[Erai-raws] Himekishi wa Barbaroi no Yome 1080p WEB-DL MultiSub",
-        "[ASW] Himekishi wa Barbaroi no Yome 720p WEB-DL",
-        "[Nobody] Himekishi wa Barbaroi no Yome 2160p WEBRip",
+        "[SubsPlease] Himekishi wa Barbaroi no Yome - 03 (1080p) [WEBRip][AB12].mkv",
+        "[Erai-raws] Himekishi wa Barbaroi no Yome - 03 [1080p][WEB-DL][MultiSub].mkv",
+        "[ASW] Himekishi wa Barbaroi no Yome - 03 [720p][WEB-DL].mkv",
+        "[Nobody] Himekishi wa Barbaroi no Yome - 03 [2160p][WEBRip].mkv",
     )
     best = bestfit.best_item(items, _BESTFIT_CFG)
-    assert best.title == "[Erai-raws] Himekishi wa Barbaroi no Yome 1080p WEB-DL MultiSub"
-    assert bestfit.profile_tokens(best) == ["[Erai-raws]", "1080p", "WEB-DL"]
+    assert best.title.startswith("[Erai-raws]")
+    assert bestfit.best_fit_query(best) == \
+        "[Erai-raws] Himekishi wa Barbaroi no Yome 1080p WEB-DL"
+
+
+def test_best_fit_query_uses_real_title_not_truncated_search():
+    # The result carries the real title; best fit rebuilds the query from it,
+    # replacing whatever truncated terms the user actually searched with.
+    item = Item(
+        "[Erai-raws] Heroine? Seijo? Iie, All Works Maid desu (Hokori)! "
+        "- 01 [1080p][WEB-DL][MultiSub]", "l")
+    assert bestfit.clean_show_name(item.title) == \
+        "Heroine Seijo Iie All Works Maid desu (Hokori)"
+    assert bestfit.best_fit_query(item) == \
+        "[Erai-raws] Heroine Seijo Iie All Works Maid desu (Hokori) 1080p WEB-DL"
 
 
 def test_preferred_resolution_target_avoids_4k():

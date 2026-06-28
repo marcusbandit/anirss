@@ -18,8 +18,15 @@ ranking is data-driven rather than a wall of per-source branches.
 import re
 
 from anirss_lib.config import BestfitConfig
-from anirss_lib.titles import RES_RE, poster_of
+from anirss_lib.titles import RES_RE, poster_of, show_name
 from anirss_lib.types import Item
+
+
+# Punctuation that's noise in a search query (and that nyaa tokenises away
+# anyway). Stripped from the extracted show name so the rebuilt query reads
+# clean: "Heroine? Seijo? Iie, ..." -> "Heroine Seijo Iie ...". Colons, dots,
+# parentheses, and the like are kept since they can carry meaning (Re:Zero).
+_TITLE_NOISE_RE = re.compile(r"[?!,]+")
 
 
 # Source-type detection. List order is *detection precedence*: WEB-DL / WEBRip
@@ -112,18 +119,33 @@ def best_item(items: list[Item], cfg: BestfitConfig) -> Item | None:
     return max(items, key=lambda it: score(it, cfg), default=None)
 
 
-def profile_tokens(item: Item) -> list[str]:
-    """The group + resolution + source tags that define `item`'s quality profile,
-    in title order. These get pinned into the query for the best-fit refetch.
-    Subtitles are deliberately excluded so the refetch isn't over-narrowed."""
-    tokens: list[str] = []
+def clean_show_name(title: str) -> str:
+    """The real show name from a release title, with search-noise punctuation
+    removed and whitespace collapsed (e.g. 'Heroine? Seijo? Iie, ... desu
+    (Hokori)!' -> 'Heroine Seijo Iie ... desu (Hokori)')."""
+    name = _TITLE_NOISE_RE.sub(" ", show_name(title))
+    return " ".join(name.split())
+
+
+def best_fit_query(item: Item) -> str:
+    """Rebuild a clean nyaa query from the best-matched release: the group, the
+    *real* show name pulled from its title, then resolution and source.
+
+    This replaces whatever (often hand-truncated) terms the user searched with
+    the canonical title the result actually has, so e.g. a search narrowed down
+    to '... Maid des' becomes '... Maid desu (Hokori)'. Subtitles are left out
+    so the refetch isn't over-narrowed."""
+    parts: list[str] = []
     poster = poster_of(item.title)
     if poster:
-        tokens.append(poster)
+        parts.append(poster)
+    name = clean_show_name(item.title)
+    if name:
+        parts.append(name)
     res = resolution_of(item.title)
     if res:
-        tokens.append(f"{res}p")
+        parts.append(f"{res}p")
     src = source_of(item.title)
     if src:
-        tokens.append(src[1])
-    return tokens
+        parts.append(src[1])
+    return " ".join(parts)

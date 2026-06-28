@@ -345,25 +345,26 @@ def _refine_loop(query: str, selected: list[Item], search: SearchConfig,
             best = bestfit.best_item(selected, bestfit_cfg)
             if best is None:
                 continue
-            tokens = [t for t in bestfit.profile_tokens(best)
-                      if t.lower() not in query.lower()]
-            if not tokens:
+            # Rebuild the query from the best result's real title, so a search
+            # narrowed down to truncated terms (e.g. "... Maid des") is replaced
+            # by the canonical name ("... Maid desu (Hokori)") plus its tags.
+            new_query = bestfit.best_fit_query(best)
+            if not new_query or new_query.lower() == query.lower():
                 print(f"{C_DIM}already at the best fit for these results{C_OFF}")
-                log("INFO", "best-fit: query already pins the top profile")
+                log("INFO", "best-fit: query already matches the top profile")
                 continue
-            new_query = build_refined_query(query, tokens, selected)
-            print(f"{C_CYN}best fit:{C_OFF} {' '.join(tokens)}")
+            print(f"{C_CYN}best fit:{C_OFF} {new_query}")
             print(f"{C_DIM}refetching nyaa with {new_query!r}...{C_OFF}")
             new_items = fetch_items(new_query, search)
             if not new_items:
                 print(f"{C_YEL}best fit returns 0 results — skipped{C_OFF}")
-                log("WARN", f"best-fit {tokens!r} → 0 results — reverted")
+                log("WARN", f"best-fit {new_query!r} → 0 results — reverted")
                 continue
             delta = len(new_items) - len(selected)
             print(f"{C_YEL}nyaa returned {len(new_items)} (was {len(selected)}, "
                   f"{delta:+d}){C_OFF}")
             query, selected = new_query, new_items
-            log("INFO", f"after best-fit {tokens!r}: {len(selected)} results, query={query!r}")
+            log("INFO", f"after best-fit: {len(selected)} results, query={query!r}")
             continue
         if pick.kind == "custom":
             term = pick.tokens[0]
