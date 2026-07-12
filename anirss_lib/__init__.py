@@ -7,6 +7,9 @@ Usage:
     anirss <magnet|*.torrent>     Download a single torrent now.
                                   (magnet URI, remote *.torrent URL, or local *.torrent path)
 
+    anirss -e <endpoint> [query]  Start on a specific endpoint (see [[endpoint]]
+                                  in config; Ctrl-E switches inside the picker).
+
     anirss -S <url>               Subscribe: skip search/refine, go to action menu.
     anirss -Sy                    Sync the feed cache from qBittorrent.
     anirss -Sh <url>              Subscribe — save under [downloads].hidden_base.

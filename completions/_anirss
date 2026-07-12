@@ -12,6 +12,8 @@ local cache="${XDG_STATE_HOME:-$HOME/.local/state}/anirss/feeds.txt"
 local -a ops feeds
 
 ops=(
+    '-e:start on a specific endpoint'
+    '--endpoint:start on a specific endpoint'
     '-Q:list subscribed feeds'
     '-Qj:list subscribed feeds as JSON'
     '-S:subscribe to a URL (skip search/refine)'

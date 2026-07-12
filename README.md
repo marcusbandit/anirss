@@ -44,6 +44,50 @@ cd anirss
 
 After the first install, edit `~/.config/anirss/config.toml` to point at your qBittorrent WebUI.
 
+## Endpoints
+
+anirss can search more than just nyaa.si. Configure one or more `[[endpoint]]` blocks in `~/.config/anirss/config.toml`, each naming a site to search. This is what ships in the default config:
+
+```toml
+[[endpoint]]
+name = "nyaa"
+kind = "nyaa"   # nyaa-style software: q/c/f params + seeders/size stats
+url = "https://nyaa.si/"
+category = "1_0"
+filter = "0"
+
+# kind = "rss" fits any site with an RSS search URL. Put {query} where the
+# search terms go; extra fixed params are fine. Stats columns show only when
+# the feed carries them. Uncomment to enable AniRena as a fallback:
+#[[endpoint]]
+#name = "anirena"
+#kind = "rss"
+#url = "https://www.anirena.com/rss?q={query}&adult=1"
+```
+
+There are two kinds:
+
+- `kind = "nyaa"`: nyaa-style software (nyaa.si and its clones), with `q`/`c`/`f` query params plus seeder/size stats columns.
+- `kind = "rss"`: any site with an RSS search feed. Put `{query}` wherever the search terms belong in `url`; extra fixed params (like AniRena's `adult=1`) are fine. Stats columns (seeders, size) only show up when the feed actually carries them.
+
+Endpoints are tried in priority order, the order they appear in the config; the first one is what anirss starts on. To start on a different one, pass `-e <name>` (also `--endpoint <name>` or `--endpoint=<name>`):
+
+```sh
+anirss -e anirena Frieren
+```
+
+While searching or refining, `Ctrl-E` switches endpoints on the fly: with two configured it just cycles between them, with three or more it opens a small picker.
+
+If the active endpoint returns zero results, or can't be reached, anirss automatically probes the other configured endpoints in priority order and switches to the first one with hits, e.g.:
+
+```text
+nyaa: 0 results, switched to anirena (27)
+```
+
+Subscribing to the same show from a second endpoint doesn't overwrite the existing qBittorrent rule/feed; the name gets suffixed with ` @<endpoint>` (e.g. `Frieren @anirena`) so both stick around side by side.
+
+`[search]` (the old single-endpoint config block) is now the deprecated legacy fallback: it only applies when no `[[endpoint]]` is defined at all. Existing configs that only have `[search]` keep working exactly as before.
+
 ## Usage
 
 ```text

@@ -8,7 +8,7 @@ _anirss() {
     _init_completion -n : || return
     cache="${XDG_STATE_HOME:-$HOME/.local/state}/anirss/feeds.txt"
 
-    local ops="-Q -Qj -S -Sh -Sy -R -Rs -Rn -Rns -Rh -Rsh -Rnh -Rnsh -T -Th --noconfirm --no-seed --config --migrate-config --version -h --help"
+    local ops="-e --endpoint -Q -Qj -S -Sh -Sy -R -Rs -Rn -Rns -Rh -Rsh -Rnh -Rnsh -T -Th --noconfirm --no-seed --config --migrate-config --version -h --help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$ops" -- "$cur") )
