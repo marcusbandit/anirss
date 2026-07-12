@@ -39,6 +39,14 @@ class SearchConfig(TypedDict):
     filter: str
 
 
+class EndpointConfig(TypedDict, total=False):
+    name: str
+    kind: str        # "nyaa" | "rss"
+    url: str
+    category: str    # nyaa kind only
+    filter: str      # nyaa kind only
+
+
 class BestfitConfig(TypedDict):
     preferred_groups: list[str]
     source_order: list[str]
@@ -58,6 +66,7 @@ class AnirssConfig(TypedDict):
     qbittorrent: QbtConfig
     downloads: DownloadsConfig
     search: SearchConfig
+    endpoint: list[EndpointConfig]
     bestfit: BestfitConfig
     logging: LoggingConfig
     display: DisplayConfig
@@ -93,6 +102,26 @@ nyaa_url = "https://nyaa.si/"
 category = "1_0"
 # nyaa filter: "0" = no filter, "1" = no remakes, "2" = trusted only
 filter = "0"
+
+# Search endpoints in priority order; the first is the default at startup.
+# Ctrl-E switches on the fly; `anirss -e <name>` starts on a specific one.
+# A search with zero hits automatically probes the rest in this order.
+# ([search] above is the legacy fallback, used only when no [[endpoint]]
+# is defined.)
+[[endpoint]]
+name = "nyaa"
+kind = "nyaa"   # nyaa-style software: q/c/f params + seeders/size stats
+url = "https://nyaa.si/"
+category = "1_0"
+filter = "0"
+
+# `kind = "rss"` fits any site with an RSS search URL. Put {query} where the
+# search terms go; extra fixed params are fine. Stats columns show only when
+# the feed carries them. Uncomment to enable AniRena as a fallback:
+#[[endpoint]]
+#name = "anirena"
+#kind = "rss"
+#url = "https://www.anirena.com/rss?q={query}&adult=1"
 
 [bestfit]
 # "[★ Try Best Fit]" in the refine picker auto-pins the best quality profile
@@ -177,6 +206,7 @@ def migrate_config() -> None:
 
 def load_config() -> AnirssConfig:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
+    user_cfg: dict = {}
     if CONFIG_PATH.exists():
         try:
             with CONFIG_PATH.open("rb") as f:
@@ -191,6 +221,14 @@ def load_config() -> AnirssConfig:
             print(f"{C_DIM}wrote default config: {CONFIG_PATH} (edit it!){C_OFF}", file=sys.stderr)
         except OSError as e:
             print(f"{C_YEL}warning: couldn't create {CONFIG_PATH}: {e}{C_OFF}", file=sys.stderr)
+    if "endpoint" not in user_cfg:
+        # Legacy config (or fresh defaults): honor [search] by synthesizing
+        # the endpoint list from it, so an edited nyaa_url keeps working.
+        s = cfg["search"]
+        cfg["endpoint"] = [{
+            "name": "nyaa", "kind": "nyaa", "url": s["nyaa_url"],
+            "category": s["category"], "filter": s["filter"],
+        }]
     cfg["downloads"]["save_base"] = os.path.expanduser(cfg["downloads"]["save_base"])
     cfg["downloads"]["movie_path"] = os.path.expanduser(cfg["downloads"]["movie_path"])
     cfg["logging"]["log_path"] = os.path.expanduser(cfg["logging"]["log_path"])
