@@ -139,7 +139,9 @@ def fzf_pick_with_query(options: list[str], header: str,
     return "", None, True, ""
 
 
-def fzf_search_prompt(prompt_label: str, *, default: str = "") -> tuple[str | None, str]:
+def fzf_search_prompt(prompt_label: str, *, default: str = "",
+                      endpoint_name: str = "", switch_hint: bool = False,
+                      ) -> tuple[str | None, str]:
     """Live nyaa search via fzf. Returns (query_or_None, key) with key in
     {"enter", "esc", "ctrl-e"}. Enter with a non-empty query returns
     (query, "enter"); empty-query Enter and Esc both return (None, "esc");
@@ -147,6 +149,12 @@ def fzf_search_prompt(prompt_label: str, *, default: str = "") -> tuple[str | No
     the caller can keep it. Ctrl-C terminates the entire process. Items
     refresh ~0.5 s after typing pauses, driven by the hidden
     ``--_search-rss`` self-invocation.
+
+    `endpoint_name`, when non-empty, is threaded through to the reload
+    commands as `--_endpoint <name>` so the live search hits the active
+    endpoint instead of the first configured one, and is named in the
+    header. `switch_hint` appends the Ctrl-E endpoint-switch hint to the
+    header when there's more than one endpoint to switch between.
     """
     from anirss_lib.readline_input import prompt as readline_prompt
     history_file = _history_path("search")
@@ -163,8 +171,16 @@ def fzf_search_prompt(prompt_label: str, *, default: str = "") -> tuple[str | No
     quoted = shlex.quote(script_path)
     # `sleep 0.5` debounces: fzf cancels in-flight reloads on every keystroke,
     # so the actual fetch only runs once typing pauses for ~0.5 s.
-    search_cmd = f"sleep 0.5 && {quoted} --_search-rss {{q}}"
-    initial_cmd = f"{quoted} --_search-rss {{q}}"
+    ep_flag = f"--_endpoint {shlex.quote(endpoint_name)} " if endpoint_name else ""
+    search_cmd = f"sleep 0.5 && {quoted} --_search-rss {ep_flag}{{q}}"
+    initial_cmd = f"{quoted} --_search-rss {ep_flag}{{q}}"
+
+    header = (
+        f"type to search {endpoint_name or 'nyaa'} · Stop typing for a sec to refresh · "
+        f"{C_BLD}Enter{C_OFF} confirms · {C_BLD}Esc{C_OFF} back · {C_BLD}Ctrl-C{C_OFF} quits"
+    )
+    if switch_hint:
+        header += f" · {C_BLD}Ctrl-E{C_OFF} endpoint"
 
     fzf_args = [
         "fzf", "--ansi",
@@ -180,9 +196,7 @@ def fzf_search_prompt(prompt_label: str, *, default: str = "") -> tuple[str | No
         "--height", "90%",
         "--no-info",
         "--preview-window=hidden",
-        "--header",
-        f"type to search nyaa · Stop typing for a sec to refresh · "
-        f"{C_BLD}Enter{C_OFF} confirms · {C_BLD}Esc{C_OFF} back · {C_BLD}Ctrl-C{C_OFF} quits",
+        "--header", header,
         "--history", str(history_file),
         "--bind", FZF_BINDS,
         "--bind", f"change:reload({search_cmd})",

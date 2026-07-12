@@ -8,15 +8,17 @@ import anirss_lib
 from anirss_lib import responsive, terminal
 from anirss_lib.ansi import (
     C_BLD, C_DIM, C_GRN, C_OFF, C_YEL, FILTER_PICKER_LINES,
-    PROMPT_SEARCH, right_anchor,
+    right_anchor,
 )
 from anirss_lib.cli.args import ParsedArgs, parse_cli_args, parse_op_flag
 from anirss_lib.cli.commands import cmd_query, cmd_remove, cmd_sync
 from anirss_lib.cli.pickers import (
     ACT_BACK, ACT_CANCEL, ACT_DL_ALL, ACT_DL_PICK, ACT_SUB,
-    pick_action, pick_downloads, pick_movie,
+    pick_action, pick_downloads, pick_endpoint, pick_movie,
 )
-from anirss_lib.cli.urls import UrlKind, classify_url, extract_nyaa_query
+from anirss_lib.cli.urls import (
+    UrlKind, classify_url, endpoint_hosts, extract_nyaa_query,
+)
 from anirss_lib.config import (
     AnirssConfig, CONFIG_PATH, load_config, migrate_config,
 )
@@ -197,17 +199,18 @@ def _run_search_state_machine(initial_query: str, cfg: AnirssConfig,
         # renders into a clean alt-screen frame.
         terminal.clear_screen()
         if state == "search":
-            result, key = fzf_search_prompt(PROMPT_SEARCH, default=last_search_query)
+            prompt_label = f"{C_YEL}{eps.active.name} >{C_OFF} "
+            result, key = fzf_search_prompt(
+                prompt_label, default=last_search_query,
+                endpoint_name=eps.active.name,
+                switch_hint=len(eps.endpoints) > 1)
             if key == "ctrl-e":
-                # Endpoint switching lands with the wiring task; ignore for now.
                 if result:
                     last_search_query = result
+                pick_endpoint(eps)
                 continue
             if result is None:
                 return "", [], ACT_CANCEL
-            if not result:
-                print(f"{C_DIM}(empty — type something or Esc to quit){C_OFF}")
-                continue
             last_search_query = result
             initial_query = result
             state = "fetch"
@@ -215,13 +218,25 @@ def _run_search_state_machine(initial_query: str, cfg: AnirssConfig,
         if state == "fetch":
             print(f"{C_BLD}Query:{C_OFF} {initial_query}")
             print(f"{C_DIM}fetching {eps.active.name}...{C_OFF}")
+            prev_name = eps.active.name
+            reason = "0 results"
             try:
                 items = endpoints_mod.fetch_items(eps.active, initial_query)
             except FetchError as e:
-                die(str(e))
+                items = []
+                reason = "unreachable"
+                print(f"{C_YEL}{e}{C_OFF}")
+            if not items and len(eps.endpoints) > 1:
+                items, notes = endpoints_mod.probe_fallback(eps, initial_query)
+                if items:
+                    print(f"{C_YEL}{prev_name}: {reason}, switched to "
+                          f"{eps.active.name} ({len(items)}){C_OFF}")
+                elif notes:
+                    print(f"{C_DIM}also tried: {', '.join(notes)}{C_OFF}")
             if not items:
-                print(f"{C_YEL}no results for {initial_query!r} — edit and try again "
-                      f"({C_DIM}↑ recalls last query{C_OFF}{C_YEL}){C_OFF}")
+                where = " anywhere" if len(eps.endpoints) > 1 else ""
+                print(f"{C_YEL}no results for {initial_query!r}{where}; edit and "
+                      f"try again ({C_DIM}↑ recalls last query{C_OFF}{C_YEL}){C_OFF}")
                 state = "search"
                 continue
             query, selected = initial_query, items
@@ -363,9 +378,16 @@ def _run_interactive(initial_query: str, force_url: str | None,
         print(f"{C_BLD}Local torrent:{C_OFF} {local_torrent_path}")
     elif force_url is None:
         arg = initial_query
-        kind = classify_url(arg) if arg else UrlKind.NOT_URL
+        nyaa_hosts, rss_hosts = endpoint_hosts(eps.endpoints)
+        kind = (classify_url(arg, nyaa_hosts=nyaa_hosts, rss_hosts=rss_hosts)
+                if arg else UrlKind.NOT_URL)
+        if kind == UrlKind.ENDPOINT_RSS:
+            # A pasted URL for a configured rss-kind endpoint: treat it as a
+            # raw feed, same as `anirss -S <url>`.
+            force_url = arg
+            kind = UrlKind.NOT_URL
         if kind == UrlKind.OTHER_HTTP:
-            die(f"bare URL only supported for nyaa.si — use `anirss -S {arg}` to subscribe")
+            die(f"bare URL doesn't match any configured endpoint - use `anirss -S {arg}` to subscribe")
         if kind == UrlKind.NYAA_RSS:
             extracted = extract_nyaa_query(arg)
             if not extracted:
@@ -487,9 +509,14 @@ def main() -> None:
     # --_search-rss is special: stay quiet, no readline, no log init;
     # this fires on every keystroke pause inside the live search picker.
     if argv and argv[0] == "--_search-rss":
-        query = " ".join(argv[1:]).strip()
+        rest = argv[1:]
+        active = endpoint_list[0]
+        if len(rest) >= 2 and rest[0] == "--_endpoint":
+            active = next((e for e in endpoint_list if e.name == rest[1]), active)
+            rest = rest[2:]
+        query = " ".join(rest).strip()
         if query:
-            _print_search_rss_rows(query, endpoint_list[0])
+            _print_search_rss_rows(query, active)
         return
 
     if _handle_meta_flags(argv, cfg):
@@ -500,7 +527,7 @@ def main() -> None:
     log("INFO", f"=== anirss invoked: argv={sys.argv[1:]} ===")
 
     parsed = parse_cli_args(argv)
-    eps = EndpointState(endpoint_list)
+    eps = EndpointState(endpoint_list, parsed.endpoint)
     handled, force_url = _handle_op_flag(parsed.positional, cfg, parsed)
     if handled:
         return
