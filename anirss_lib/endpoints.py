@@ -1,10 +1,13 @@
 """Search endpoints: config validation, active-endpoint state, URL building,
 fetch dispatch, and the auto-fallback probe."""
 
+import re
 import urllib.parse
 from typing import NamedTuple
 
+from anirss_lib import nyaa
 from anirss_lib.logging import die
+from anirss_lib.types import Item
 
 
 VALID_KINDS = ("nyaa", "rss")
@@ -78,3 +81,69 @@ def search_url(ep: Endpoint, query: str) -> str:
         })
         return f"{ep.url}?{qs}"
     return ep.url.replace("{query}", urllib.parse.quote_plus(query))
+
+
+# Splits a query into fields, keeping `-"quoted phrase"` / `"quoted"` intact.
+# Shared with refine.py's positional-insert logic.
+FIELD_RE = re.compile(r'-?"[^"]*"|\S+')
+
+
+def split_exclusions(query: str) -> tuple[str, list[str]]:
+    """Split `query` into (positive-terms query, exclusion terms). An
+    exclusion is a `-tag` or `-"quoted phrase"` field (nyaa syntax). Generic
+    RSS endpoints don't understand `-tag`, so exclusions are applied
+    client-side after the fetch instead."""
+    positive: list[str] = []
+    excluded: list[str] = []
+    for field in FIELD_RE.findall(query):
+        if field.startswith("-") and len(field) > 1:
+            core = field[1:]
+            if len(core) >= 2 and core[0] == '"' and core[-1] == '"':
+                core = core[1:-1]
+            if core:
+                excluded.append(core)
+                continue
+        positive.append(field)
+    return " ".join(positive), excluded
+
+
+def filter_excluded(items: list[Item], terms: list[str]) -> list[Item]:
+    """Drop items whose title contains any excluded term (case-insensitive)."""
+    if not terms:
+        return items
+    lc = [t.lower() for t in terms]
+    return [it for it in items
+            if not any(t in it.title.lower() for t in lc)]
+
+
+def fetch_items(ep: Endpoint, query: str) -> list[Item]:
+    """Fetch `query` from `ep`. Raises nyaa.FetchError on network/parse errors."""
+    if ep.kind == "nyaa":
+        return nyaa.fetch_rss(search_url(ep, query), ep.name)
+    positive, excluded = split_exclusions(query)
+    items = nyaa.fetch_rss(search_url(ep, positive), ep.name)
+    return filter_excluded(items, excluded)
+
+
+def probe_fallback(state: EndpointState, query: str, fetch=None
+                   ) -> tuple[list[Item], list[str]]:
+    """After the active endpoint came up empty or unreachable, try the other
+    endpoints in priority order. First hit wins: state.active switches to it
+    and its items are returned. Returns (items, per-endpoint notes); empty
+    items means nothing anywhere. `fetch` is injectable for tests."""
+    fetch = fetch or fetch_items
+    notes: list[str] = []
+    for ep in state.endpoints:
+        if ep is state.active:
+            continue
+        try:
+            items = fetch(ep, query)
+        except nyaa.FetchError:
+            notes.append(f"{ep.name}: unreachable")
+            continue
+        if items:
+            state.active = ep
+            notes.append(f"{ep.name}: {len(items)}")
+            return items, notes
+        notes.append(f"{ep.name}: 0")
+    return [], notes
