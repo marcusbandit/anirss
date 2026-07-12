@@ -136,8 +136,9 @@ Applies only to the initial search fetch after query submit:
   On error the notice says so: `nyaa: unreachable, switched to ...`.
 - All endpoints empty: report per-endpoint counts and exit as today.
 - During refine: never auto-hop (zero results usually means the
-  exclusions worked). Show a hint instead:
-  `no results (ctrl-e to try anirena)`.
+  exclusions worked; refine already reverts to the previous result set).
+  Discoverability comes from a persistent `Ctrl-E endpoint` hint in the
+  refine picker header instead of transient messages.
 - Live typing: never probes non-active endpoints.
 
 ## Refine, Best Fit, Exclusions
