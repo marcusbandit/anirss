@@ -117,7 +117,26 @@ def _torrents_add_error(body: str) -> str | None:
 
 # -------- user-facing actions --------
 
-def do_subscribe(qbt: QbtSession, feed_url: str, name: str, save_base: str) -> None:
+def _unique_rule_name(qbt: QbtSession, name: str, feed_url: str,
+                      endpoint_name: str) -> str:
+    """Same show subscribed from a different endpoint gets ' @endpoint'
+    suffixed so the existing rule and feed aren't silently overwritten.
+    Re-subscribing the same feed keeps the name (idempotent overwrite)."""
+    try:
+        rules = qbt.get_json("/api/v2/rss/rules")
+    except Exception:
+        return name
+    if not isinstance(rules, dict) or name not in rules:
+        return name
+    feeds = rules[name].get("affectedFeeds") or []
+    if feed_url in feeds or not endpoint_name:
+        return name
+    return f"{name} @{endpoint_name}"
+
+
+def do_subscribe(qbt: QbtSession, feed_url: str, name: str, save_base: str,
+                 endpoint_name: str = "") -> str:
+    name = _unique_rule_name(qbt, name, feed_url, endpoint_name)
     save_path = os.path.join(save_base, name)
     print(f"{C_CYN}==>{C_OFF} adding feed {C_BLD}{name}{C_OFF}")
     qbt.post("/api/v2/rss/addFeed", url=feed_url, path=name)
@@ -138,6 +157,7 @@ def do_subscribe(qbt: QbtSession, feed_url: str, name: str, save_base: str) -> N
     }
     print(f"{C_CYN}==>{C_OFF} adding rule  {C_BLD}{name}{C_OFF} -> {save_path}")
     qbt.post("/api/v2/rss/setRule", ruleName=name, ruleDef=json.dumps(rule))
+    return name
 
 
 def do_download(qbt: QbtSession, links: list[str], name: str, save_base: str) -> None:

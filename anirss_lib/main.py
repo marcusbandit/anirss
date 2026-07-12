@@ -324,7 +324,7 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointStat
     qbt = _login_for(parsed, cfg)
 
     if parsed.subscribe:
-        do_subscribe(qbt, feed_url_for_sub, default_name, _save_base_for(parsed, cfg))
+        do_subscribe(qbt, feed_url_for_sub, default_name, _save_base_for(parsed, cfg), endpoint_name=eps.active.name)
     elif parsed.download_all:
         links = [it.link for it in items]
         do_download(qbt, links, default_name, _save_base_for(parsed, cfg))
@@ -474,7 +474,7 @@ def _run_interactive(initial_query: str, force_url: str | None,
     hidden_tag = f" {C_DIM}(hidden){C_OFF}" if parsed.hidden else ""
     summary: str | None = None
     if feed_url:
-        do_subscribe(qbt, feed_url, name, save_base)
+        name = do_subscribe(qbt, feed_url, name, save_base, endpoint_name=eps.active.name)
         summary = (f"{C_GRN}✓{C_OFF} Subscribed: {C_BLD}{name}{C_OFF}{hidden_tag}"
                    f"  {C_DIM}(feed: {feed_url}){C_OFF}")
     elif download_links:
