@@ -14,6 +14,7 @@ class ParsedArgs:
     positional: list[str] = field(default_factory=list)
     noconfirm: bool = False
     name: str | None = None
+    endpoint: str | None = None
     password_stdin: bool = False
 
     # action flags (mutually exclusive)
@@ -78,8 +79,8 @@ def parse_op_flag(arg: str) -> tuple[str, set[str]] | None:
 
 def parse_cli_args(argv: list[str]) -> ParsedArgs:
     """Pull out long-form flags (--subscribe, --download-all, --download N,
-    --movie, --name X, --password-stdin, --noconfirm). Leaves op flags
-    (-Q/-S/-R*), URLs, and free-form queries in `positional`.
+    --movie, --name X, -e/--endpoint NAME, --password-stdin, --noconfirm).
+    Leaves op flags (-Q/-S/-R*), URLs, and free-form queries in `positional`.
 
     Errors (via die) on bad N for --download or two competing action flags.
     """
@@ -121,6 +122,13 @@ def parse_cli_args(argv: list[str]) -> ParsedArgs:
                 die(f"--download expects an integer, got {a.split('=', 1)[1]!r}")
             if out.download_n is not None and out.download_n < 1:
                 die(f"--download N must be >= 1, got {out.download_n}")
+        elif a in ("-e", "--endpoint"):
+            i += 1
+            if i >= len(argv):
+                die("--endpoint requires a name")
+            out.endpoint = argv[i]
+        elif a.startswith("--endpoint="):
+            out.endpoint = a.split("=", 1)[1]
         elif a.startswith("--"):
             # An unrecognized `--flag` would silently become part of the search
             # query, which is almost never what the user meant — and risks

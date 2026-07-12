@@ -130,3 +130,22 @@ def test_parse_op_flag_ignores_long_and_unknown():
     assert a.parse_op_flag("frieren") is None
     assert a.parse_op_flag("") is None
     assert a.parse_op_flag("-") is None
+
+
+def test_endpoint_flag_short():
+    out = a.parse_cli_args(["-e", "anirena", "some", "query"])
+    assert out.endpoint == "anirena"
+    assert out.positional == ["some", "query"]
+
+
+def test_endpoint_flag_long_and_equals():
+    assert a.parse_cli_args(["--endpoint", "nyaa"]).endpoint == "nyaa"
+    assert a.parse_cli_args(["--endpoint=nyaa"]).endpoint == "nyaa"
+
+
+def test_endpoint_flag_missing_value_dies(monkeypatch):
+    def fake_die(msg):
+        raise SystemExit(1)
+    monkeypatch.setattr(a, "die", fake_die)
+    with pytest.raises(SystemExit):
+        a.parse_cli_args(["-e"])
