@@ -107,6 +107,28 @@ def pick_downloads(items: list[Item]) -> list[Item]:
     return chosen
 
 
+def pick_endpoint(state) -> "Endpoint | None":
+    """Switch the active endpoint. With two configured, just cycle; with
+    more, open a small fzf pick. Returns the new active endpoint (state is
+    mutated), or None when cancelled/unchanged/nothing to switch to."""
+    if len(state.endpoints) < 2:
+        return None
+    if len(state.endpoints) == 2:
+        return state.cycle()
+    options = [
+        f"{e.name} (active)" if e is state.active else e.name
+        for e in state.endpoints
+    ]
+    choice = fzf_pick_one(options, "switch endpoint", prompt_label="endpoint > ")
+    if choice is None:
+        return None
+    ep = state.by_name(choice.removesuffix(" (active)"))
+    if ep is None or ep is state.active:
+        return None
+    state.active = ep
+    return ep
+
+
 def pick_movie(items: list[Item]) -> Item | None:
     width = max(40, terminal.get_size().columns - 3)
     sorted_items = sorted(items, key=lambda i: i.downloads, reverse=True)

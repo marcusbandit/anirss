@@ -22,7 +22,7 @@ class Group(NamedTuple):
 
 class Pick(NamedTuple):
     """Result of pick_group: a kind and (for tokens/custom) the relevant terms."""
-    kind: str  # tokens | done | exclude | show_all | best_fit | custom | back
+    kind: str  # tokens | done | exclude | show_all | best_fit | custom | back | endpoint
     tokens: list[str]
 
 
@@ -31,3 +31,4 @@ PICK_EXCLUDE = Pick("exclude", [])
 PICK_SHOW_ALL = Pick("show_all", [])
 PICK_BEST_FIT = Pick("best_fit", [])
 PICK_BACK = Pick("back", [])
+PICK_ENDPOINT = Pick("endpoint", [])

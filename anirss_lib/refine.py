@@ -1,25 +1,27 @@
 """Interactive refinement loop and its building blocks."""
 
-import re
 import signal
 import sys
 from collections import Counter, defaultdict
 from statistics import median
 
 from anirss_lib.ansi import (
-    C_BLD, C_CYN, C_DIM, C_GRN, C_OFF, C_RED, C_YEL, ansi_strip,
+    C_BLD, C_BLU, C_CYN, C_DIM, C_GRN, C_OFF, C_RED, C_YEL, PROMPT_FILTER,
+    ansi_strip,
 )
-from anirss_lib import bestfit, responsive, terminal
-from anirss_lib.config import BestfitConfig, SearchConfig
+from anirss_lib import bestfit, endpoints as endpoints_mod, responsive, terminal
+from anirss_lib.cli.pickers import pick_endpoint
+from anirss_lib.config import BestfitConfig
+from anirss_lib.endpoints import EndpointState
 from anirss_lib.format import colorize_picker_label, show_titles
 from anirss_lib.fzf import fzf_pick_with_query, view_all_titles
-from anirss_lib.logging import log
-from anirss_lib.nyaa import fetch_items
+from anirss_lib.logging import die, log
+from anirss_lib.nyaa import FetchError
 from anirss_lib.readline_input import prompt
 from anirss_lib.titles import RES_RE, poster_of, title_tokens
 from anirss_lib.types import (
-    Group, Item, PICK_BACK, PICK_BEST_FIT, PICK_DONE, PICK_EXCLUDE,
-    PICK_SHOW_ALL, Pick,
+    Group, Item, PICK_BACK, PICK_BEST_FIT, PICK_DONE, PICK_ENDPOINT,
+    PICK_EXCLUDE, PICK_SHOW_ALL, Pick,
 )
 
 
@@ -142,13 +144,16 @@ def compute_groups(selected: list[Item]) -> list[Group]:
 
 
 def pick_group(groups: list[Group], selected: list[Item],
-               *, height: str | None = None) -> Pick:
-    """Show the picker. Return a Pick (kind=tokens|done|exclude|show_all|custom).
+               *, height: str | None = None,
+               state: EndpointState | None = None) -> Pick:
+    """Show the picker. Return a Pick (kind=tokens|done|exclude|show_all|custom|endpoint).
 
     Typing text + Enter with no fzf match becomes Pick("custom", [text]) so the
     caller can decide whether to fold the text into the nyaa query. The
     `height` override (e.g. "50%") is passed straight through to fzf's
-    --height so the picker auto-resizes on SIGWINCH.
+    --height so the picker auto-resizes on SIGWINCH. `state` (when given)
+    shows the active endpoint's name in the prompt and enables Ctrl-E to
+    switch endpoints.
     """
     n_results = len(selected)
     show_all_label = f"[≡ Show All {n_results} Titles]"
@@ -168,9 +173,20 @@ def pick_group(groups: list[Group], selected: list[Item],
         f"(adds to query if no match) · {C_BLD}Esc{C_OFF} → back to search · "
         f"{C_BLD}Ctrl-C{C_OFF} quits"
     )
-    query, choice, cancelled, _key = fzf_pick_with_query(options, header, height=height)
+    if state and len(state.endpoints) > 1:
+        header += f" · {C_BLD}Ctrl-E{C_OFF} endpoint"
+    prompt_label = (
+        f"{C_YEL}{state.active.name} >{C_OFF} {C_BLU}Filter >{C_OFF} "
+        if state else PROMPT_FILTER
+    )
+    query, choice, cancelled, key = fzf_pick_with_query(
+        options, header, height=height, prompt_label=prompt_label,
+        extra_expect="ctrl-e",
+    )
     if cancelled:
         return PICK_BACK
+    if key == "ctrl-e":
+        return PICK_ENDPOINT
     if choice is None:
         if query:
             log("INFO", f"custom-filter typed: {query!r}")
@@ -191,11 +207,6 @@ def pick_group(groups: list[Group], selected: list[Item],
         return PICK_DONE
     log("INFO", f"picked {chosen_label!r} -> tokens {chosen.tokens}")
     return Pick("tokens", chosen.tokens)
-
-
-# Split a query into fields, keeping a `"quoted phrase"` (with an optional
-# leading `-`) as one field so rebuilding round-trips the original quoting.
-_FIELD_RE = re.compile(r'-?"[^"]*"|\S+')
 
 
 def _field_text(field: str) -> str:
@@ -226,7 +237,7 @@ def _insert_positional(query: str, token: str, selected: list[Item]) -> str:
     1080p before multisub) instead of being blindly appended. Posters are never
     crossed; exclusions (`-tag`) always stay at the tail.
     """
-    fields = _FIELD_RE.findall(query)
+    fields = endpoints_mod.FIELD_RE.findall(query)
     token_pos = _title_position(token.lower(), selected)
     insert_at = len(fields)
     for i, field in enumerate(fields):
@@ -280,7 +291,7 @@ def add_term_to_query(query: str, term: str) -> str:
     return f"{query} {flag}"
 
 
-def refine(initial_query: str, items: list[Item], search: SearchConfig,
+def refine(initial_query: str, items: list[Item], state: EndpointState,
            bestfit_cfg: BestfitConfig) -> tuple[str, list[Item], str]:
     """Return (final_query, list of Items, status) after interactive refinement.
     `status` is "done" if the user finalized, or "back" if Esc was pressed to
@@ -296,7 +307,7 @@ def refine(initial_query: str, items: list[Item], search: SearchConfig,
 
     _PREV_WINCH_HANDLER = signal.signal(signal.SIGWINCH, _on_sigwinch)
     try:
-        return _refine_loop(query, selected, search, bestfit_cfg)
+        return _refine_loop(query, selected, state, bestfit_cfg)
     finally:
         _CURRENT_FRAME = None
         if _PREV_WINCH_HANDLER is not None:
@@ -304,7 +315,7 @@ def refine(initial_query: str, items: list[Item], search: SearchConfig,
         _PREV_WINCH_HANDLER = None
 
 
-def _refine_loop(query: str, selected: list[Item], search: SearchConfig,
+def _refine_loop(query: str, selected: list[Item], state: EndpointState,
                  bestfit_cfg: BestfitConfig) -> tuple[str, list[Item], str]:
     """The original refine loop body; extracted so refine() can wrap it
     in signal-handler setup/teardown via try/finally.
@@ -332,7 +343,7 @@ def _refine_loop(query: str, selected: list[Item], search: SearchConfig,
             "query": query,
             "no_groups": not groups,
         }
-        pick = pick_group(groups, selected, height=picker_height_spec)
+        pick = pick_group(groups, selected, height=picker_height_spec, state=state)
         if pick.kind == "done":
             break
         if pick.kind == "back":
@@ -340,6 +351,27 @@ def _refine_loop(query: str, selected: list[Item], search: SearchConfig,
             return query, selected, "back"
         if pick.kind == "show_all":
             view_all_titles(selected)
+            continue
+        if pick.kind == "endpoint":
+            prev = state.active
+            new_ep = pick_endpoint(state)
+            if new_ep is None:
+                continue
+            print(f"{C_DIM}refetching {new_ep.name} with {query!r}...{C_OFF}")
+            try:
+                new_items = endpoints_mod.fetch_items(new_ep, query)
+            except FetchError as e:
+                print(f"{C_YEL}{e}, staying on {prev.name}{C_OFF}")
+                state.active = prev
+                continue
+            if not new_items:
+                print(f"{C_YEL}{new_ep.name}: 0 results for this query, "
+                      f"staying on {prev.name}{C_OFF}")
+                state.active = prev
+                continue
+            print(f"{C_YEL}switched to {new_ep.name}: {len(new_items)} result(s){C_OFF}")
+            selected = new_items
+            log("INFO", f"endpoint switch -> {new_ep.name}: {len(new_items)} results")
             continue
         if pick.kind == "best_fit":
             best = bestfit.best_item(selected, bestfit_cfg)
@@ -354,14 +386,17 @@ def _refine_loop(query: str, selected: list[Item], search: SearchConfig,
                 log("INFO", "best-fit: query already matches the top profile")
                 continue
             print(f"{C_CYN}best fit:{C_OFF} {new_query}")
-            print(f"{C_DIM}refetching nyaa with {new_query!r}...{C_OFF}")
-            new_items = fetch_items(new_query, search)
+            print(f"{C_DIM}refetching {state.active.name} with {new_query!r}...{C_OFF}")
+            try:
+                new_items = endpoints_mod.fetch_items(state.active, new_query)
+            except FetchError as e:
+                die(str(e))
             if not new_items:
-                print(f"{C_YEL}best fit returns 0 results — skipped{C_OFF}")
-                log("WARN", f"best-fit {new_query!r} → 0 results — reverted")
+                print(f"{C_YEL}best fit returns 0 results, skipped{C_OFF}")
+                log("WARN", f"best-fit {new_query!r} -> 0 results, reverted")
                 continue
             delta = len(new_items) - len(selected)
-            print(f"{C_YEL}nyaa returned {len(new_items)} (was {len(selected)}, "
+            print(f"{C_YEL}{state.active.name} returned {len(new_items)} (was {len(selected)}, "
                   f"{delta:+d}){C_OFF}")
             query, selected = new_query, new_items
             log("INFO", f"after best-fit: {len(selected)} results, query={query!r}")
@@ -375,14 +410,17 @@ def _refine_loop(query: str, selected: list[Item], search: SearchConfig,
                 log("WARN", f"custom filter {term!r}: 0 substring matches in current results")
                 continue
             new_query = add_term_to_query(query, term)
-            print(f"{C_DIM}refetching nyaa with {new_query!r}...{C_OFF}")
-            new_items = fetch_items(new_query, search)
+            print(f"{C_DIM}refetching {state.active.name} with {new_query!r}...{C_OFF}")
+            try:
+                new_items = endpoints_mod.fetch_items(state.active, new_query)
+            except FetchError as e:
+                die(str(e))
             if not new_items:
                 print(f"{C_YEL}filter would yield 0 results — skipped{C_OFF}")
                 log("WARN", f"after custom {term!r}: 0 results — reverted")
                 continue
             removed = len(selected) - len(new_items)
-            print(f"{C_YEL}filtered — nyaa returned {len(new_items)} (was {len(selected)}, "
+            print(f"{C_YEL}filtered: {state.active.name} returned {len(new_items)} (was {len(selected)}, "
                   f"{removed:+d}){C_OFF}")
             query, selected = new_query, new_items
             log("INFO", f"after custom {term!r}: {len(selected)} results, query={query!r}")
@@ -391,16 +429,19 @@ def _refine_loop(query: str, selected: list[Item], search: SearchConfig,
             term = prompt("Exclude term: ", history="exclude")
             new_query = add_exclude_to_query(query, term)
             if new_query == query:
-                print(f"{C_DIM}empty — skipped{C_OFF}")
+                print(f"{C_DIM}empty, skipped{C_OFF}")
                 continue
-            print(f"{C_DIM}refetching nyaa with {new_query!r}...{C_OFF}")
-            new_items = fetch_items(new_query, search)
+            print(f"{C_DIM}refetching {state.active.name} with {new_query!r}...{C_OFF}")
+            try:
+                new_items = endpoints_mod.fetch_items(state.active, new_query)
+            except FetchError as e:
+                die(str(e))
             if not new_items:
                 print(f"{C_YEL}exclude would yield 0 results — skipped{C_OFF}")
                 log("WARN", f"after exclude {term!r}: 0 results — reverted")
                 continue
             removed = len(selected) - len(new_items)
-            print(f"{C_YEL}excluded — nyaa returned {len(new_items)} (was {len(selected)}, "
+            print(f"{C_YEL}excluded: {state.active.name} returned {len(new_items)} (was {len(selected)}, "
                   f"{removed:+d}){C_OFF}")
             query, selected = new_query, new_items
             log("INFO", f"after exclude {term!r}: {len(selected)} results, query={query!r}")
@@ -411,14 +452,17 @@ def _refine_loop(query: str, selected: list[Item], search: SearchConfig,
         # The first RSS page only holds the most-recent matches, so a narrower
         # query surfaces episodes the broad search never returned.
         new_query = build_refined_query(query, pick.tokens, selected)
-        print(f"{C_DIM}refetching nyaa with {new_query!r}...{C_OFF}")
-        new_items = fetch_items(new_query, search)
+        print(f"{C_DIM}refetching {state.active.name} with {new_query!r}...{C_OFF}")
+        try:
+            new_items = endpoints_mod.fetch_items(state.active, new_query)
+        except FetchError as e:
+            die(str(e))
         if not new_items:
             print(f"{C_YEL}that filter returns 0 results — skipped{C_OFF}")
             log("WARN", f"tokens {pick.tokens!r} → 0 results — skipped")
             continue
         delta = len(new_items) - len(selected)
-        print(f"{C_YEL}nyaa returned {len(new_items)} (was {len(selected)}, "
+        print(f"{C_YEL}{state.active.name} returned {len(new_items)} (was {len(selected)}, "
               f"{delta:+d}){C_OFF}")
         query, selected = new_query, new_items
         log("INFO", f"after pick {pick.tokens!r}: {len(selected)} results, query={query!r}")

@@ -2,26 +2,14 @@
 
 import re
 import urllib.error
-import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from anirss_lib.config import SearchConfig
-from anirss_lib.logging import die, log
+from anirss_lib.logging import log
 from anirss_lib.types import Item
 
 
 NYAA_NS = {"nyaa": "https://nyaa.si/xmlns/nyaa"}
-
-
-def search_url(query: str, search: SearchConfig) -> str:
-    qs = urllib.parse.urlencode({
-        "page": "rss",
-        "q": query,
-        "c": search["category"],
-        "f": search["filter"],
-    })
-    return f"{search['nyaa_url']}?{qs}"
 
 
 def _int_text(elem: ET.Element | None) -> int:
@@ -112,15 +100,3 @@ def fetch_rss(url: str, endpoint_name: str = "feed") -> list[Item]:
     items = parse_rss(data, endpoint_name)
     log("INFO", f"  -> {len(items)} items")
     return items
-
-
-# Back-compat alias for main.py's -S flow; removed once main migrates (Task 8).
-_fetch_items_from_url = fetch_rss
-
-
-def fetch_items(query: str, search: SearchConfig) -> list[Item]:
-    """Return list of Items from the nyaa RSS for `query`."""
-    try:
-        return fetch_rss(search_url(query, search), "nyaa")
-    except FetchError as e:
-        die(str(e))

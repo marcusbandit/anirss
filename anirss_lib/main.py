@@ -20,12 +20,14 @@ from anirss_lib.cli.urls import UrlKind, classify_url, extract_nyaa_query
 from anirss_lib.config import (
     AnirssConfig, CONFIG_PATH, load_config, migrate_config,
 )
+from anirss_lib import endpoints as endpoints_mod
+from anirss_lib.endpoints import Endpoint, EndpointState, load_endpoints
 from anirss_lib.format import (
     category_chip, colorize_title, format_stats, show_titles,
 )
 from anirss_lib.fzf import fzf_search_prompt
 from anirss_lib.logging import die, init_log, log
-from anirss_lib.nyaa import _fetch_items_from_url, fetch_items, search_url
+from anirss_lib.nyaa import FetchError, fetch_rss
 from anirss_lib.qbt.actions import (
     do_download, do_movie, do_subscribe, do_upload_local_torrent,
 )
@@ -73,9 +75,13 @@ def _login_for(parsed: ParsedArgs, cfg: AnirssConfig):
     return login_with_password(cfg["qbittorrent"], pw)
 
 
-def _print_search_rss_rows(query: str, cfg: AnirssConfig) -> None:
+def _print_search_rss_rows(query: str, ep: Endpoint) -> None:
     """Hidden self-invocation handler called by fzf's reload binding."""
-    items = fetch_items(query, cfg["search"])
+    try:
+        items = endpoints_mod.fetch_items(ep, query)
+    except FetchError as e:
+        print(f"{C_DIM}{e}{C_OFF}")
+        return
     width = max(40, terminal.get_size().columns - 3)
     for item in items:
         line = f"{format_stats(item)}  {colorize_title(item.title)}"
@@ -173,8 +179,8 @@ def _handle_op_flag(argv: list[str], cfg: AnirssConfig, parsed: ParsedArgs
 
 # ---- interactive search → refine → action state machine ----
 
-def _run_search_state_machine(initial_query: str, cfg: AnirssConfig
-                              ) -> tuple[str, list[Item], str]:
+def _run_search_state_machine(initial_query: str, cfg: AnirssConfig,
+                              eps: EndpointState) -> tuple[str, list[Item], str]:
     """Loops search → fetch → refine → action picker. Returns
     (final_query, final_items, action). Caller proceeds based on `action`.
     Esc at search returns ("", [], ACT_CANCEL).
@@ -208,8 +214,11 @@ def _run_search_state_machine(initial_query: str, cfg: AnirssConfig
             continue
         if state == "fetch":
             print(f"{C_BLD}Query:{C_OFF} {initial_query}")
-            print(f"{C_DIM}fetching nyaa.si...{C_OFF}")
-            items = fetch_items(initial_query, cfg["search"])
+            print(f"{C_DIM}fetching {eps.active.name}...{C_OFF}")
+            try:
+                items = endpoints_mod.fetch_items(eps.active, initial_query)
+            except FetchError as e:
+                die(str(e))
             if not items:
                 print(f"{C_YEL}no results for {initial_query!r} — edit and try again "
                       f"({C_DIM}↑ recalls last query{C_OFF}{C_YEL}){C_OFF}")
@@ -219,7 +228,7 @@ def _run_search_state_machine(initial_query: str, cfg: AnirssConfig
             state = "refine"
             continue
         if state == "refine":
-            query, selected, status = refine(query, selected, cfg["search"],
+            query, selected, status = refine(query, selected, eps,
                                              cfg["bestfit"])
             if status == "back":
                 state = "search"
@@ -239,7 +248,7 @@ def _run_search_state_machine(initial_query: str, cfg: AnirssConfig
 
 # ---- non-interactive runner ----
 
-def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig,
+def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointState,
                         initial_query: str, force_url: str | None) -> None:
     """Execute the chosen action without ever opening fzf or prompting."""
     # `-T <path>` already gave us a validated file — upload it and exit.
@@ -278,15 +287,21 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig,
             return
 
     if force_url is not None:
-        items = _fetch_items_from_url(force_url)
+        try:
+            items = fetch_rss(force_url)
+        except FetchError as e:
+            die(str(e))
         if not items:
             die(f"no items returned by {force_url}")
         feed_url_for_sub = force_url
     elif initial_query:
-        items = fetch_items(initial_query, cfg["search"])
+        try:
+            items = endpoints_mod.fetch_items(eps.active, initial_query)
+        except FetchError as e:
+            die(str(e))
         if not items:
             die(f"no results for {initial_query!r}")
-        feed_url_for_sub = search_url(initial_query, cfg["search"])
+        feed_url_for_sub = endpoints_mod.search_url(eps.active, initial_query)
     else:
         die("non-interactive action requires a query or -S <url>")
 
@@ -322,7 +337,8 @@ _URL_FLOW_CHROME_LINES = 3 + FILTER_PICKER_LINES
 
 
 def _run_interactive(initial_query: str, force_url: str | None,
-                     parsed: ParsedArgs, cfg: AnirssConfig) -> None:
+                     parsed: ParsedArgs, cfg: AnirssConfig,
+                     eps: EndpointState) -> None:
     """Two-phase flow:
 
       Phase 1 (alt screen): search → refine → action picker. Wiped on
@@ -376,7 +392,10 @@ def _run_interactive(initial_query: str, force_url: str | None,
             if force_url is not None:
                 print(f"{C_BLD}Subscribe URL:{C_OFF} {force_url}")
                 print(f"{C_DIM}fetching feed...{C_OFF}")
-                items = _fetch_items_from_url(force_url)
+                try:
+                    items = fetch_rss(force_url)
+                except FetchError as e:
+                    die(str(e))
                 if not items:
                     die(f"no items returned by {force_url}")
                 print(f"{C_BLD}{len(items)} item(s):{C_OFF}")
@@ -401,14 +420,14 @@ def _run_interactive(initial_query: str, force_url: str | None,
                     if movie_choice is None:
                         return
             else:
-                query, selected, action = _run_search_state_machine(initial_query, cfg)
+                query, selected, action = _run_search_state_machine(initial_query, cfg, eps)
                 if action == ACT_CANCEL:
                     return
                 default_name = initial_query or "anirss"
                 if selected:
                     default_name = show_name(selected[0].title) or default_name
                 if action == ACT_SUB:
-                    feed_url = search_url(query, cfg["search"])
+                    feed_url = endpoints_mod.search_url(eps.active, query)
                 elif action == ACT_DL_ALL:
                     download_links = [it.link for it in selected]
                 elif action == ACT_DL_PICK:
@@ -461,15 +480,16 @@ def _run_interactive(initial_query: str, force_url: str | None,
 def main() -> None:
     cfg = load_config()
     responsive.set_display(cfg["display"])
+    endpoint_list = load_endpoints(cfg)
 
     argv = sys.argv[1:]
 
-    # --_search-rss is special: stay quiet, no readline, no log init —
+    # --_search-rss is special: stay quiet, no readline, no log init;
     # this fires on every keystroke pause inside the live search picker.
     if argv and argv[0] == "--_search-rss":
         query = " ".join(argv[1:]).strip()
         if query:
-            _print_search_rss_rows(query, cfg)
+            _print_search_rss_rows(query, endpoint_list[0])
         return
 
     if _handle_meta_flags(argv, cfg):
@@ -480,6 +500,7 @@ def main() -> None:
     log("INFO", f"=== anirss invoked: argv={sys.argv[1:]} ===")
 
     parsed = parse_cli_args(argv)
+    eps = EndpointState(endpoint_list)
     handled, force_url = _handle_op_flag(parsed.positional, cfg, parsed)
     if handled:
         return
@@ -490,7 +511,7 @@ def main() -> None:
         # Remove both so the rest of positional is empty (no extra args expected).
         parsed.positional = parsed.positional[2:]
 
-    # Same dance for `-T <path>` — the path is already on parsed; drop the
+    # Same dance for `-T <path>`: the path is already on parsed; drop the
     # two positional tokens so they don't get treated as a search query.
     if parsed.local_torrent_path is not None:
         parsed.positional = parsed.positional[2:]
@@ -498,7 +519,7 @@ def main() -> None:
     initial_query = " ".join(parsed.positional).strip()
 
     if parsed.non_interactive:
-        _run_noninteractive(parsed, cfg, initial_query, force_url)
+        _run_noninteractive(parsed, cfg, eps, initial_query, force_url)
         return
 
-    _run_interactive(initial_query, force_url, parsed, cfg)
+    _run_interactive(initial_query, force_url, parsed, cfg, eps)
