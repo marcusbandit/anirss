@@ -50,6 +50,25 @@ def test_search_url_rss_kind_fills_template():
     assert url == "https://www.anirena.com/rss?q=shin+chan&adult=1"
 
 
+def test_feed_url_nyaa_kind_keeps_exclusions_in_url():
+    url, excluded = endpoints.feed_url(NYAA, "one piece -HEVC")
+    assert url == endpoints.search_url(NYAA, "one piece -HEVC")
+    assert excluded == []
+
+
+def test_feed_url_rss_kind_strips_exclusions():
+    url, excluded = endpoints.feed_url(ANIRENA, 'show 1080p -HEVC -"dual audio"')
+    assert "HEVC" not in url and "dual" not in url
+    assert url == endpoints.search_url(ANIRENA, "show 1080p")
+    assert excluded == ["HEVC", "dual audio"]
+
+
+def test_feed_url_rss_kind_no_exclusions_roundtrips():
+    url, excluded = endpoints.feed_url(ANIRENA, "shin chan")
+    assert url == endpoints.search_url(ANIRENA, "shin chan")
+    assert excluded == []
+
+
 def test_state_default_active_is_first():
     st = EndpointState([NYAA, ANIRENA])
     assert st.active is NYAA

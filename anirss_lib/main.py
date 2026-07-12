@@ -301,6 +301,8 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointStat
             print(f"{C_GRN}done.{C_OFF}")
             return
 
+    sub_endpoint_name = ""
+    must_not_contain = ""
     if force_url is not None:
         try:
             items = fetch_rss(force_url)
@@ -316,7 +318,9 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointStat
             die(str(e))
         if not items:
             die(f"no results for {initial_query!r}")
-        feed_url_for_sub = endpoints_mod.search_url(eps.active, initial_query)
+        feed_url_for_sub, excluded = endpoints_mod.feed_url(eps.active, initial_query)
+        sub_endpoint_name = eps.active.name
+        must_not_contain = "|".join(excluded)
     else:
         die("non-interactive action requires a query or -S <url>")
 
@@ -324,7 +328,11 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointStat
     qbt = _login_for(parsed, cfg)
 
     if parsed.subscribe:
-        do_subscribe(qbt, feed_url_for_sub, default_name, _save_base_for(parsed, cfg), endpoint_name=eps.active.name)
+        do_subscribe(qbt, feed_url_for_sub, default_name, _save_base_for(parsed, cfg),
+                     endpoint_name=sub_endpoint_name, must_not_contain=must_not_contain)
+        if must_not_contain:
+            print(f"{C_DIM}exclusions apply via the qB rule (mustNotContain): "
+                  f"{must_not_contain}{C_OFF}")
     elif parsed.download_all:
         links = [it.link for it in items]
         do_download(qbt, links, default_name, _save_base_for(parsed, cfg))
@@ -365,6 +373,8 @@ def _run_interactive(initial_query: str, force_url: str | None,
     persist (bad URL, no items) are raised *before* alt screen entry.
     """
     feed_url: str | None = None
+    sub_endpoint_name: str = ""
+    must_not_contain: str = ""
     download_links: list[str] | None = None
     local_torrent_path: str | None = None
     movie_choice: Item | None = None
@@ -449,7 +459,9 @@ def _run_interactive(initial_query: str, force_url: str | None,
                 if selected:
                     default_name = show_name(selected[0].title) or default_name
                 if action == ACT_SUB:
-                    feed_url = endpoints_mod.search_url(eps.active, query)
+                    feed_url, excluded = endpoints_mod.feed_url(eps.active, query)
+                    sub_endpoint_name = eps.active.name
+                    must_not_contain = "|".join(excluded)
                 elif action == ACT_DL_ALL:
                     download_links = [it.link for it in selected]
                 elif action == ACT_DL_PICK:
@@ -474,9 +486,14 @@ def _run_interactive(initial_query: str, force_url: str | None,
     hidden_tag = f" {C_DIM}(hidden){C_OFF}" if parsed.hidden else ""
     summary: str | None = None
     if feed_url:
-        name = do_subscribe(qbt, feed_url, name, save_base, endpoint_name=eps.active.name)
+        name = do_subscribe(qbt, feed_url, name, save_base,
+                            endpoint_name=sub_endpoint_name,
+                            must_not_contain=must_not_contain)
         summary = (f"{C_GRN}✓{C_OFF} Subscribed: {C_BLD}{name}{C_OFF}{hidden_tag}"
                    f"  {C_DIM}(feed: {feed_url}){C_OFF}")
+        if must_not_contain:
+            summary += (f"\n{C_DIM}exclusions apply via the qB rule "
+                       f"(mustNotContain): {must_not_contain}{C_OFF}")
     elif download_links:
         do_download(qbt, download_links, name, save_base)
         plural = "" if n_dl == 1 else "s"
@@ -502,13 +519,13 @@ def _run_interactive(initial_query: str, force_url: str | None,
 def main() -> None:
     cfg = load_config()
     responsive.set_display(cfg["display"])
-    endpoint_list = load_endpoints(cfg)
 
     argv = sys.argv[1:]
 
     # --_search-rss is special: stay quiet, no readline, no log init;
     # this fires on every keystroke pause inside the live search picker.
     if argv and argv[0] == "--_search-rss":
+        endpoint_list = load_endpoints(cfg)
         rest = argv[1:]
         active = endpoint_list[0]
         if len(rest) >= 2 and rest[0] == "--_endpoint":
@@ -521,6 +538,8 @@ def main() -> None:
 
     if _handle_meta_flags(argv, cfg):
         return
+
+    endpoint_list = load_endpoints(cfg)
 
     init_log(cfg["logging"]["log_path"])
     setup_readline()

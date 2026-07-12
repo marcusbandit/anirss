@@ -137,7 +137,7 @@ def _unique_rule_name(qbt: QbtSession, name: str, feed_url: str,
 
 
 def do_subscribe(qbt: QbtSession, feed_url: str, name: str, save_base: str,
-                 endpoint_name: str = "") -> str:
+                 endpoint_name: str = "", must_not_contain: str = "") -> str:
     name = _unique_rule_name(qbt, name, feed_url, endpoint_name)
     save_path = os.path.join(save_base, name)
     print(f"{C_CYN}==>{C_OFF} adding feed {C_BLD}{name}{C_OFF}")
@@ -145,7 +145,7 @@ def do_subscribe(qbt: QbtSession, feed_url: str, name: str, save_base: str,
     rule = {
         "enabled": True,
         "mustContain": "",
-        "mustNotContain": "",
+        "mustNotContain": must_not_contain,
         "useRegex": False,
         "episodeFilter": "",
         "smartFilter": False,

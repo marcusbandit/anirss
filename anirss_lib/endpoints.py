@@ -107,6 +107,18 @@ def split_exclusions(query: str) -> tuple[str, list[str]]:
     return " ".join(positive), excluded
 
 
+def feed_url(ep: Endpoint, query: str) -> tuple[str, list[str]]:
+    """URL to persist as a qBittorrent RSS feed for `query`, plus the
+    exclusion terms that could not be encoded into it. nyaa understands
+    -tag exclusions server-side, so they stay in the URL; generic rss
+    endpoints get only the positive terms and the exclusions are returned
+    for the caller to enforce via the qB rule instead."""
+    if ep.kind == "nyaa":
+        return search_url(ep, query), []
+    positive, excluded = split_exclusions(query)
+    return search_url(ep, positive), excluded
+
+
 def filter_excluded(items: list[Item], terms: list[str]) -> list[Item]:
     """Drop items whose title contains any excluded term (case-insensitive)."""
     if not terms:
