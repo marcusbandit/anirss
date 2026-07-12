@@ -31,3 +31,10 @@ def test_unique_rule_name_survives_api_errors():
         def get_json(self, path):
             raise RuntimeError("down")
     assert actions._unique_rule_name(Boom(), "Show", "http://f", "x") == "Show"
+
+
+def test_unique_rule_name_survives_die_style_exit():
+    class Dies:
+        def get_json(self, path):
+            raise SystemExit(1)
+    assert actions._unique_rule_name(Dies(), "Show", "http://f", "x") == "Show"

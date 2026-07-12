@@ -123,12 +123,14 @@ def _unique_rule_name(qbt: QbtSession, name: str, feed_url: str,
     suffixed so the existing rule and feed aren't silently overwritten.
     Re-subscribing the same feed keeps the name (idempotent overwrite)."""
     try:
+        # qbt.get() die()s (SystemExit) on HTTP errors; this read is
+        # best-effort, so swallow that too and keep the plain name.
         rules = qbt.get_json("/api/v2/rss/rules")
-    except Exception:
+        if not isinstance(rules, dict) or name not in rules:
+            return name
+        feeds = rules[name].get("affectedFeeds") or []
+    except (Exception, SystemExit):
         return name
-    if not isinstance(rules, dict) or name not in rules:
-        return name
-    feeds = rules[name].get("affectedFeeds") or []
     if feed_url in feeds or not endpoint_name:
         return name
     return f"{name} @{endpoint_name}"
