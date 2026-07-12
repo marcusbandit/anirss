@@ -142,7 +142,8 @@ def fzf_pick_with_query(options: list[str], header: str,
 def fzf_search_prompt(prompt_label: str, *, default: str = "",
                       endpoint_name: str = "", switch_hint: bool = False,
                       ) -> tuple[str | None, str]:
-    """Live nyaa search via fzf. Returns (query_or_None, key) with key in
+    """Live search via fzf against the active endpoint. Returns
+    (query_or_None, key) with key in
     {"enter", "esc", "ctrl-e"}. Enter with a non-empty query returns
     (query, "enter"); empty-query Enter and Esc both return (None, "esc");
     Ctrl-E returns the currently typed text (possibly empty) and "ctrl-e" so

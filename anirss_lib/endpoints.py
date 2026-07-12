@@ -34,6 +34,9 @@ def load_endpoints(cfg) -> list[Endpoint]:
         if name in seen:
             die(f"[[endpoint]] #{i}: duplicate name {name!r}")
         seen.add(name)
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+            die(f"[[endpoint]] {name!r}: invalid name "
+                f"(use only letters, digits, '.', '_', '-')")
         if kind not in VALID_KINDS:
             die(f"[[endpoint]] {name!r}: unknown kind {kind!r} "
                 f"(valid: {', '.join(VALID_KINDS)})")

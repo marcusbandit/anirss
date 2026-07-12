@@ -22,7 +22,6 @@ FZF_BINDS = (
     "ctrl-w:backward-kill-word"
 )
 
-PROMPT_SEARCH = f"{C_YEL}Search >{C_OFF} "
 PROMPT_FILTER = f"{C_YEL}Search >{C_OFF} {C_BLU}Filter >{C_OFF} "
 PROMPT_ACTION = f"{C_YEL}Search >{C_OFF} {C_BLU}Filter >{C_OFF} {C_GRN}Action >{C_OFF} "
 

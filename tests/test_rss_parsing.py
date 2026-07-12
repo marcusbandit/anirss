@@ -73,3 +73,16 @@ def test_parse_rss_bad_xml_raises_fetch_error():
     import pytest
     with pytest.raises(nyaa.FetchError):
         nyaa.parse_rss("<not-xml", endpoint_name="anirena")
+
+
+def test_fetch_rss_url_error_raises_fetch_error(monkeypatch):
+    import pytest
+    import urllib.error
+    import urllib.request
+
+    def fake_urlopen(req, timeout=30):
+        raise urllib.error.URLError("boom")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(nyaa.FetchError, match="anirena"):
+        nyaa.fetch_rss("https://example.invalid/rss", "anirena")

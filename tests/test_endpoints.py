@@ -38,6 +38,12 @@ def test_load_endpoints_duplicate_name_dies():
         endpoints.load_endpoints({"endpoint": [ep, dict(ep)]})
 
 
+def test_load_endpoints_invalid_name_chars_dies():
+    ep = {"name": "bad name)", "kind": "nyaa", "url": "https://x/"}
+    with pytest.raises(SystemExit):
+        endpoints.load_endpoints({"endpoint": [ep]})
+
+
 def test_search_url_nyaa_kind():
     url = endpoints.search_url(NYAA, "one piece")
     assert url.startswith("https://nyaa.si/?")

@@ -95,7 +95,7 @@ def fetch_rss(url: str, endpoint_name: str = "feed") -> list[Item]:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = resp.read()
-    except urllib.error.URLError as e:
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise FetchError(f"can't reach {endpoint_name}: {e}") from e
     items = parse_rss(data, endpoint_name)
     log("INFO", f"  -> {len(items)} items")

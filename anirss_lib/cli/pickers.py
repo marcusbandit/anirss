@@ -107,7 +107,7 @@ def pick_downloads(items: list[Item]) -> list[Item]:
     return chosen
 
 
-def pick_endpoint(state) -> "Endpoint | None":
+def pick_endpoint(state):
     """Switch the active endpoint. With two configured, just cycle; with
     more, open a small fzf pick. Returns the new active endpoint (state is
     mutated), or None when cancelled/unchanged/nothing to switch to."""
