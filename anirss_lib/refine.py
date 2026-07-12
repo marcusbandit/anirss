@@ -168,7 +168,7 @@ def pick_group(groups: list[Group], selected: list[Item],
         f"(adds to query if no match) · {C_BLD}Esc{C_OFF} → back to search · "
         f"{C_BLD}Ctrl-C{C_OFF} quits"
     )
-    query, choice, cancelled = fzf_pick_with_query(options, header, height=height)
+    query, choice, cancelled, _key = fzf_pick_with_query(options, header, height=height)
     if cancelled:
         return PICK_BACK
     if choice is None:

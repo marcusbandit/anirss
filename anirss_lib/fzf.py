@@ -85,20 +85,25 @@ def fzf_pick_one(options: list[str], header: str, *,
 
 def fzf_pick_with_query(options: list[str], header: str,
                         *, height: str | None = None,
-                        ) -> tuple[str, str | None, bool]:
+                        prompt_label: str = PROMPT_FILTER,
+                        extra_expect: str = "",
+                        ) -> tuple[str, str | None, bool, str]:
     """Run fzf with --print-query.
 
-    Returns (typed_query, selected_choice_or_None, cancelled).
-    cancelled=True means esc/ctrl-c — caller should treat as "done".
+    Returns (typed_query, selected_choice_or_None, cancelled, expect_key).
+    cancelled=True means esc/ctrl-c: caller should treat as "done".
     cancelled=False with choice=None means Enter was pressed with no fzf match
-    (custom-filter attempt).
+    (custom-filter attempt). expect_key is the key that ended the session
+    ("" for plain Enter, e.g. "ctrl-e" when `extra_expect` requested it).
 
     `height` is passed verbatim to fzf's --height (so callers can use "50%"
     or an absolute "24"). When omitted, auto-fit to the option count and
-    clamp at FILTER_PICKER_LINES.
+    clamp at FILTER_PICKER_LINES. `prompt_label` overrides the default filter
+    prompt. `extra_expect` adds additional --expect keys beyond ctrl-c
+    (comma-separated, e.g. "ctrl-e").
     """
     if not shutil.which("fzf") or not options:
-        return "", None, True
+        return "", None, True, ""
     if height is not None:
         final_height = height
     else:
@@ -107,7 +112,7 @@ def fzf_pick_with_query(options: list[str], header: str,
         "fzf", "--ansi",
         "--color", FZF_HL_COLORS,
         "--bind", FZF_BINDS,
-        "--prompt", PROMPT_FILTER,
+        "--prompt", prompt_label,
         "--header", header,
         "--layout=reverse",
         "--height", final_height,
@@ -115,10 +120,10 @@ def fzf_pick_with_query(options: list[str], header: str,
         "--print-query",
         # Don't grab the mouse: tmux/the terminal keeps it, so the Query line
         # printed above the picker stays drag-selectable (copy/paste). The
-        # tradeoff is no click-to-pick on options — arrow keys + Enter still work.
+        # tradeoff is no click-to-pick on options, arrow keys + Enter still work.
         "--no-mouse",
         "--preview-window=hidden",
-        "--expect", "ctrl-c",
+        "--expect", "ctrl-c" + (f",{extra_expect}" if extra_expect else ""),
     ]
     proc = subprocess.run(
         args, input="\n".join(options), text=True, stdout=subprocess.PIPE,
@@ -127,17 +132,21 @@ def fzf_pick_with_query(options: list[str], header: str,
     query = out.query.strip()
     if proc.returncode == 0:
         choice = out.selections[0].strip() if out.selections else ""
-        return query, (choice or None), False
+        return query, (choice or None), False, out.expect_key
     if proc.returncode == 1:
-        # Enter pressed with no match — treat query as a custom filter.
-        return query, None, False
-    return "", None, True
+        # Enter pressed with no match: treat query as a custom filter.
+        return query, None, False, out.expect_key
+    return "", None, True, ""
 
 
-def fzf_search_prompt(prompt_label: str, *, default: str = "") -> str | None:
-    """Live nyaa search via fzf. Returns the typed query on Enter, None on Esc.
-    Ctrl-C terminates the entire process. Items refresh ~0.5 s after typing
-    pauses, driven by the hidden ``--_search-rss`` self-invocation.
+def fzf_search_prompt(prompt_label: str, *, default: str = "") -> tuple[str | None, str]:
+    """Live nyaa search via fzf. Returns (query_or_None, key) with key in
+    {"enter", "esc", "ctrl-e"}. Enter with a non-empty query returns
+    (query, "enter"); empty-query Enter and Esc both return (None, "esc");
+    Ctrl-E returns the currently typed text (possibly empty) and "ctrl-e" so
+    the caller can keep it. Ctrl-C terminates the entire process. Items
+    refresh ~0.5 s after typing pauses, driven by the hidden
+    ``--_search-rss`` self-invocation.
     """
     from anirss_lib.readline_input import prompt as readline_prompt
     history_file = _history_path("search")
@@ -147,9 +156,8 @@ def fzf_search_prompt(prompt_label: str, *, default: str = "") -> str | None:
         pass
 
     if not shutil.which("fzf"):
-        # Fallback: readline prompt. die() exits on Ctrl-C/EOF, matching
-        # "Ctrl-C kills".
-        return readline_prompt(prompt_label, history="search") or None
+        q = readline_prompt(prompt_label, history="search") or None
+        return q, ("enter" if q else "esc")
 
     script_path = shutil.which(sys.argv[0]) or os.path.abspath(sys.argv[0])
     quoted = shlex.quote(script_path)
@@ -163,7 +171,7 @@ def fzf_search_prompt(prompt_label: str, *, default: str = "") -> str | None:
         "--disabled",        # nyaa does the filtering; fzf only renders.
         "--no-mouse",        # no clicking on items either.
         "--print-query",
-        "--expect", "ctrl-c,enter",  # Enter is an exit-key — never selects an item.
+        "--expect", "ctrl-c,enter,ctrl-e",  # Enter/Ctrl-E are exit-keys, never select an item.
         "--color", FZF_HL_COLORS,
         "--prompt", prompt_label,
         "--query", default,
@@ -187,17 +195,17 @@ def fzf_search_prompt(prompt_label: str, *, default: str = "") -> str | None:
 
     proc = subprocess.run(fzf_args, input="", text=True, stdout=subprocess.PIPE)
     out = _parse_fzf_output(proc.stdout or "", print_query=True, expect=True)
-    if out.expect_key == "enter":
-        q = out.query.strip()
-        if not q:
-            return None
+    q = out.query.strip()
+    if out.expect_key == "ctrl-e":
+        return q, "ctrl-e"
+    if out.expect_key == "enter" and q:
         try:
             with history_file.open("a") as f:
                 f.write(q + "\n")
         except OSError:
             pass
-        return q
-    return None
+        return q, "enter"
+    return None, "esc"
 
 
 def view_all_titles(items: list[Item]) -> None:

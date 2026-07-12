@@ -191,7 +191,12 @@ def _run_search_state_machine(initial_query: str, cfg: AnirssConfig
         # renders into a clean alt-screen frame.
         terminal.clear_screen()
         if state == "search":
-            result = fzf_search_prompt(PROMPT_SEARCH, default=last_search_query)
+            result, key = fzf_search_prompt(PROMPT_SEARCH, default=last_search_query)
+            if key == "ctrl-e":
+                # Endpoint switching lands with the wiring task; ignore for now.
+                if result:
+                    last_search_query = result
+                continue
             if result is None:
                 return "", [], ACT_CANCEL
             if not result:
