@@ -78,11 +78,13 @@ anirss -e anirena Frieren
 
 While searching or refining, `Ctrl-E` switches endpoints on the fly: with two configured it just cycles between them, with three or more it opens a small picker.
 
-If the active endpoint returns zero results, or can't be reached, anirss automatically probes the other configured endpoints in priority order and switches to the first one with hits, e.g.:
+On the initial search, if the active endpoint returns zero results or can't be reached, anirss automatically probes the other configured endpoints in priority order and switches to the first one with hits, e.g.:
 
 ```text
 nyaa: 0 results, switched to anirena (27)
 ```
+
+During refining (token picks, filters, excludes, Best Fit), zero-result fetches stay on the current endpoint and revert to the previous state; switch manually with Ctrl-E.
 
 Subscribing to the same show from a second endpoint doesn't overwrite the existing qBittorrent rule/feed; the name gets suffixed with ` @<endpoint>` (e.g. `Frieren @anirena`) so both stick around side by side.
 
