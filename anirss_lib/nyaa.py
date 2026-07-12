@@ -1,5 +1,6 @@
 """RSS fetching and parsing: nyaa stat extensions plus generic-feed fallbacks."""
 
+import html
 import re
 import urllib.error
 import urllib.request
@@ -66,7 +67,9 @@ def parse_rss(data: bytes | str, endpoint_name: str = "feed") -> list[Item]:
         size = _str_text(entry.find("nyaa:size", NYAA_NS))
         category = _str_text(entry.find("nyaa:category", NYAA_NS))
         if not size or not category:
-            desc = _str_text(entry.find("description"))
+            # CDATA descriptions arrive HTML-escaped (AniRena writes
+            # "Anime &gt; Subs"), so unescape what the regexes pull out.
+            desc = html.unescape(_str_text(entry.find("description")))
             if desc:
                 if not size and (m := _DESC_SIZE_RE.search(desc)):
                     size = m.group(1).strip()

@@ -23,7 +23,7 @@ ANIRENA_XML = """<?xml version="1.0" encoding="UTF-8"?>
   <item>
     <title>[Anime &gt; Subs] Sayonara Lara - 02 [1080p CR WEBRip][768DB037]</title>
     <link>https://www.anirena.com/torrents/019f57b3</link>
-    <description><![CDATA[Size: 485.1 MB | Uploader: Erai-raws | Category: Anime > Subs]]></description>
+    <description><![CDATA[Size: 485.1 MB | Uploader: Erai-raws | Category: Anime &gt; Subs]]></description>
     <enclosure url="https://www.anirena.com/torrents/019f57b3.torrent" type="application/x-bittorrent" length="0"/>
   </item>
   <item>
