@@ -7,12 +7,15 @@ that define its profile so the refine loop can refetch every matching release.
 Everything here is pure: parsing helpers plus a `score()` that turns a title +
 config into a comparable tuple. The tuple's field *order* is the policy:
 
-    (is_trusted, source_rank, resolution, has_subs, group_rank, seeders, downloads)
+    (is_trusted, source_rank, resolution, has_subs, audio_rank,
+     group_rank, seeders, downloads)
 
 Trusted groups win first; among them the source type decides (so WEB-DL always
-beats WebRip), then resolution, then subtitle presence, then which trusted group
-it is, then raw popularity. Group/source priority come from config lists, so the
-ranking is data-driven rather than a wall of per-source branches.
+beats WebRip), then resolution, then subtitle presence, then the audio variant
+(Dual-Audio beats Multi-Audio: JP+EN is all we play, the extra dubs just cost
+disk), then which trusted group it is, then raw popularity. Group/source
+priority come from config lists, so the ranking is data-driven rather than a
+wall of per-source branches.
 """
 
 import re
@@ -39,8 +42,16 @@ _SOURCE_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("WEB",    re.compile(r"\bWEB\b", re.IGNORECASE)),
     ("HDTV",   re.compile(r"\bHDTV\b", re.IGNORECASE)),
 ]
-_SUBS_RE = re.compile(r"Multi[\s._-]?Subs?|Multiple Subtitle|Dual[\s._-]?Audio",
-                      re.IGNORECASE)
+_SUBS_RE = re.compile(r"Multi[\s._-]?Subs?|Multiple Subtitle", re.IGNORECASE)
+
+# Audio-variant detection, same shape as _SOURCE_PATTERNS. List order is both
+# detection precedence and preference: Dual-Audio first. The bare "Multi" form
+# must not swallow "Multi Subs", hence the lookahead.
+_AUDIO_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("Dual",  re.compile(r"Dual[\s._-]?Audio|\bDual\b", re.IGNORECASE)),
+    ("Multi", re.compile(r"Multi[\s._-]?Audio|\bMulti\b(?![\s._-]?Sub)",
+                         re.IGNORECASE)),
+]
 
 
 def source_of(title: str) -> tuple[str, str] | None:
@@ -54,6 +65,28 @@ def source_of(title: str) -> tuple[str, str] | None:
         if m:
             return name, m.group(0)
     return None
+
+
+def audio_of(title: str) -> tuple[str, str] | None:
+    """(canonical_name, literal_match) of the first audio-variant tag found,
+    else None. Same contract as source_of: the literal is what the title
+    actually says (e.g. "DUAL" vs "Dual-Audio") so it can be pinned back into
+    a query and still match."""
+    for name, pattern in _AUDIO_PATTERNS:
+        m = pattern.search(title)
+        if m:
+            return name, m.group(0)
+    return None
+
+
+def _audio_rank(title: str) -> int:
+    """Rank of the title's audio variant in _AUDIO_PATTERNS order (first =
+    highest), 0 when the title carries no audio tag."""
+    audio = audio_of(title)
+    if not audio:
+        return 0
+    names = [name for name, _ in _AUDIO_PATTERNS]
+    return len(names) - names.index(audio[0])
 
 
 def resolution_of(title: str) -> int:
@@ -108,6 +141,7 @@ def score(item: Item, cfg: BestfitConfig) -> tuple:
         _source_rank(title, cfg["source_order"]),            # WEB-DL > WebRip
         _resolution_score(resolution_of(title), cfg["preferred_resolution"]),
         1 if has_subs(title) else 0,
+        _audio_rank(title),                                  # Dual > Multi
         grank,                                               # which trusted group
         item.seeders,
         item.downloads,
@@ -135,8 +169,9 @@ def best_fit_query(item: Item) -> str:
     the canonical title the result actually has, so e.g. a search narrowed down
     to '... Maid des' becomes '... Maid desu (Hokori)'. A SxxEyy marker keeps
     only its season half (pinning the episode would drop every other episode
-    from the refetch). Subtitles are left out so the refetch isn't
-    over-narrowed."""
+    from the refetch). The audio variant IS pinned: groups that post a DUAL
+    and a MULTi copy of every episode would otherwise come back as duplicate
+    pairs. Subtitles are left out so the refetch isn't over-narrowed."""
     parts: list[str] = []
     poster = poster_of(item.title)
     if poster:
@@ -153,4 +188,7 @@ def best_fit_query(item: Item) -> str:
     src = source_of(item.title)
     if src:
         parts.append(src[1])
+    audio = audio_of(item.title)
+    if audio:
+        parts.append(audio[1])
     return " ".join(parts)

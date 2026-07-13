@@ -272,6 +272,35 @@ def test_resolution_and_subs_parsing():
     assert bestfit.resolution_of("Show no res") == 0
     assert bestfit.has_subs("[X] Show 1080p WEB-DL MultiSub") is True
     assert bestfit.has_subs("[X] Show 1080p WEB-DL") is False
+    # Dual-Audio is an audio variant, not a subtitle signal.
+    assert bestfit.has_subs("[X] Show 1080p WEB-DL Dual-Audio") is False
+
+
+def test_audio_variant_parsing():
+    assert bestfit.audio_of("[X] Show S01E01 1080p WEB-DL DUAL AAC2.0")[0] == "Dual"
+    assert bestfit.audio_of("[X] Show S01E01 1080p WEB-DL MULTi AAC2.0")[0] == "Multi"
+    assert bestfit.audio_of("[X] Show - 01 (Multi-Audio)")[0] == "Multi"
+    assert bestfit.audio_of("[X] Show 1080p WEB-DL MultiSub") is None
+    assert bestfit.audio_of("[X] Show 1080p Multi Subs") is None
+
+
+def test_best_item_prefers_dual_audio_over_multi():
+    items = _items(
+        "[ToonsHub] Show S01E01 1080p NF WEB-DL MULTi AAC2.0 H.264",
+        "[ToonsHub] Show S01E01 1080p NF WEB-DL DUAL AAC2.0 H.264",
+    )
+    best = bestfit.best_item(items, _BESTFIT_CFG)
+    assert "DUAL" in best.title
+
+
+def test_best_item_prefers_multisub_over_audio_variant():
+    # Subtitles outrank the audio variant: multi-sub beats dual-audio.
+    items = _items(
+        "[Erai-raws] Show 1080p WEB-DL DUAL",
+        "[Erai-raws] Show 1080p WEB-DL MultiSub",
+    )
+    best = bestfit.best_item(items, _BESTFIT_CFG)
+    assert "MultiSub" in best.title
 
 
 def test_best_item_prefers_web_dl_over_webrip():
@@ -322,7 +351,16 @@ def test_best_fit_query_keeps_season_drops_episode():
     item = Item("[ToonsHub] Sparks of Tomorrow S01E02 1080p NF WEB-DL DUAL "
                 "AAC2.0 H.264 (Nijusseiki Denki Mokuroku)", "l")
     assert bestfit.best_fit_query(item) == \
-        "[ToonsHub] Sparks of Tomorrow S01 1080p WEB-DL"
+        "[ToonsHub] Sparks of Tomorrow S01 1080p WEB-DL DUAL"
+
+
+def test_best_fit_query_pins_audio_variant_to_dedupe_episodes():
+    # Without the audio token the refetch returns a DUAL and a MULTi copy of
+    # every episode; pinning it keeps best fit at one release per episode.
+    item = Item("[ToonsHub] Sparks of Tomorrow S01E01 1080p NF WEB-DL MULTi "
+                "AAC2.0 H.264 (Nijusseiki Denki Mokuroku)", "l")
+    assert bestfit.best_fit_query(item) == \
+        "[ToonsHub] Sparks of Tomorrow S01 1080p WEB-DL MULTi"
 
 
 def test_preferred_resolution_target_avoids_4k():
