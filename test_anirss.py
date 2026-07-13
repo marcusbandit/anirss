@@ -83,6 +83,12 @@ def test_show_name_no_poster():
     assert show_name("Some Show - 01 [1080p].mkv") == "Some Show"
 
 
+def test_show_name_cuts_at_season_episode_marker():
+    title = ("[ToonsHub] Sparks of Tomorrow S01E02 1080p NF WEB-DL MULTi "
+             "AAC2.0 H.264 (Nijusseiki Denki Mokuroku)")
+    assert show_name(title) == "Sparks of Tomorrow"
+
+
 # -------- title_tokens --------
 
 def test_title_tokens_strips_poster_and_extension():
@@ -109,6 +115,13 @@ def test_title_tokens_keeps_hex_with_letters_outside_af():
     # Hex regex requires only [0-9A-Fa-f]; presence of g-z keeps the token.
     tokens = title_tokens("Show ABCDEFG.mkv")
     assert "ABCDEFG" in tokens
+
+
+def test_title_tokens_normalizes_season_episode_to_season():
+    # SxxEyy pins a single episode; only the season half is a real facet.
+    tokens = title_tokens("[ToonsHub] Sparks of Tomorrow S01E02 1080p WEB-DL.mkv")
+    assert "S01E02" not in tokens
+    assert "S01" in tokens
 
 
 def test_title_tokens_drops_short():
@@ -303,6 +316,13 @@ def test_best_fit_query_uses_real_title_not_truncated_search():
         "Heroine Seijo Iie All Works Maid desu (Hokori)"
     assert bestfit.best_fit_query(item) == \
         "[Erai-raws] Heroine Seijo Iie All Works Maid desu (Hokori) 1080p WEB-DL"
+
+
+def test_best_fit_query_keeps_season_drops_episode():
+    item = Item("[ToonsHub] Sparks of Tomorrow S01E02 1080p NF WEB-DL DUAL "
+                "AAC2.0 H.264 (Nijusseiki Denki Mokuroku)", "l")
+    assert bestfit.best_fit_query(item) == \
+        "[ToonsHub] Sparks of Tomorrow S01 1080p WEB-DL"
 
 
 def test_preferred_resolution_target_avoids_4k():
