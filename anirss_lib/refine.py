@@ -145,7 +145,8 @@ def compute_groups(selected: list[Item]) -> list[Group]:
 
 def pick_group(groups: list[Group], selected: list[Item],
                *, height: str | None = None,
-               state: EndpointState | None = None) -> Pick:
+               state: EndpointState | None = None,
+               show_best_fit: bool = True) -> Pick:
     """Show the picker. Return a Pick (kind=tokens|done|exclude|show_all|custom|endpoint).
 
     Typing text + Enter with no fzf match becomes Pick("custom", [text]) so the
@@ -153,17 +154,19 @@ def pick_group(groups: list[Group], selected: list[Item],
     `height` override (e.g. "50%") is passed straight through to fzf's
     --height so the picker auto-resizes on SIGWINCH. `state` (when given)
     shows the active endpoint's name in the prompt and enables Ctrl-E to
-    switch endpoints.
+    switch endpoints. `show_best_fit=False` drops the [★ Try Best Fit] row;
+    the caller passes it when rerunning best fit would change nothing.
     """
     n_results = len(selected)
     show_all_label = f"[≡ Show All {n_results} Titles]"
     label_width = 28
     options = [
-        f"{C_CYN}{BEST_FIT}{C_OFF}",
-        f"{C_YEL}{show_all_label}{C_OFF}",
         f"{C_GRN}{DONE}{C_OFF}",
+        f"{C_YEL}{show_all_label}{C_OFF}",
         f"{C_RED}{EXCLUDE}{C_OFF}",
     ]
+    if show_best_fit:
+        options.insert(0, f"{C_CYN}{BEST_FIT}{C_OFF}")
     options += [
         f"{colorize_picker_label(g.label, label_width)} {C_DIM}({g.member_count}){C_OFF}"
         for g in groups
@@ -207,6 +210,20 @@ def pick_group(groups: list[Group], selected: list[Item],
         return PICK_DONE
     log("INFO", f"picked {chosen_label!r} -> tokens {chosen.tokens}")
     return Pick("tokens", chosen.tokens)
+
+
+def _best_fit_query_for(query: str, selected: list[Item],
+                        cfg: BestfitConfig) -> str:
+    """The query [★ Try Best Fit] would refetch with, or "" when running it
+    would be a no-op (nothing to rank, empty rebuild, or the current query
+    already matching the top release's profile)."""
+    best = bestfit.best_item(selected, cfg)
+    if best is None:
+        return ""
+    new_query = bestfit.best_fit_query(best)
+    if not new_query or new_query.lower() == query.lower():
+        return ""
+    return new_query
 
 
 def _field_text(field: str) -> str:
@@ -343,7 +360,11 @@ def _refine_loop(query: str, selected: list[Item], state: EndpointState,
             "query": query,
             "no_groups": not groups,
         }
-        pick = pick_group(groups, selected, height=picker_height_spec, state=state)
+        # Best fit's refetch query is computed up front: when it is empty the
+        # option is hidden (rerunning it would change nothing).
+        best_query = _best_fit_query_for(query, selected, bestfit_cfg)
+        pick = pick_group(groups, selected, height=picker_height_spec,
+                          state=state, show_best_fit=bool(best_query))
         if pick.kind == "done":
             break
         if pick.kind == "back":
@@ -374,31 +395,26 @@ def _refine_loop(query: str, selected: list[Item], state: EndpointState,
             log("INFO", f"endpoint switch -> {new_ep.name}: {len(new_items)} results")
             continue
         if pick.kind == "best_fit":
-            best = bestfit.best_item(selected, bestfit_cfg)
-            if best is None:
+            # best_query rebuilds the query from the best result's real title,
+            # so a search narrowed down to truncated terms (e.g. "... Maid
+            # des") is replaced by the canonical name plus its tags. Empty
+            # means the option was hidden, so this is unreachable then.
+            if not best_query:
                 continue
-            # Rebuild the query from the best result's real title, so a search
-            # narrowed down to truncated terms (e.g. "... Maid des") is replaced
-            # by the canonical name ("... Maid desu (Hokori)") plus its tags.
-            new_query = bestfit.best_fit_query(best)
-            if not new_query or new_query.lower() == query.lower():
-                print(f"{C_DIM}already at the best fit for these results{C_OFF}")
-                log("INFO", "best-fit: query already matches the top profile")
-                continue
-            print(f"{C_CYN}best fit:{C_OFF} {new_query}")
-            print(f"{C_DIM}refetching {state.active.name} with {new_query!r}...{C_OFF}")
+            print(f"{C_CYN}best fit:{C_OFF} {best_query}")
+            print(f"{C_DIM}refetching {state.active.name} with {best_query!r}...{C_OFF}")
             try:
-                new_items = endpoints_mod.fetch_items(state.active, new_query)
+                new_items = endpoints_mod.fetch_items(state.active, best_query)
             except FetchError as e:
                 die(str(e))
             if not new_items:
                 print(f"{C_YEL}best fit returns 0 results, skipped{C_OFF}")
-                log("WARN", f"best-fit {new_query!r} -> 0 results, reverted")
+                log("WARN", f"best-fit {best_query!r} -> 0 results, reverted")
                 continue
             delta = len(new_items) - len(selected)
             print(f"{C_YEL}{state.active.name} returned {len(new_items)} (was {len(selected)}, "
                   f"{delta:+d}){C_OFF}")
-            query, selected = new_query, new_items
+            query, selected = best_query, new_items
             log("INFO", f"after best-fit: {len(selected)} results, query={query!r}")
             continue
         if pick.kind == "custom":

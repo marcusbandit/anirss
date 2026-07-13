@@ -18,6 +18,8 @@ from anirss_lib.qbt import feeds as _feeds
 from anirss_lib.qbt import session as _session
 from anirss_lib.qbt.actions import _human_bytes, _norm_path
 from anirss_lib.qbt.session import _effective_cookie_host, _make_sid_cookie
+from anirss_lib import refine as _refine
+from anirss_lib.ansi import ansi_strip
 from anirss_lib.refine import (
     add_exclude_to_query, auto_resolution, build_refined_query, compute_groups,
 )
@@ -352,6 +354,48 @@ def test_best_fit_query_keeps_season_drops_episode():
                 "AAC2.0 H.264 (Nijusseiki Denki Mokuroku)", "l")
     assert bestfit.best_fit_query(item) == \
         "[ToonsHub] Sparks of Tomorrow S01 1080p WEB-DL DUAL"
+
+
+def test_best_fit_query_for_returns_refetch_query():
+    items = _items("[Erai-raws] Show - 01 [1080p][WEB-DL]")
+    assert _refine._best_fit_query_for("show", items, _BESTFIT_CFG) == \
+        "[Erai-raws] Show 1080p WEB-DL"
+
+
+def test_best_fit_query_for_empty_when_rerun_changes_nothing():
+    items = _items("[Erai-raws] Show - 01 [1080p][WEB-DL]")
+    assert _refine._best_fit_query_for(
+        "[erai-raws] show 1080p web-dl", items, _BESTFIT_CFG) == ""
+
+
+def test_pick_group_action_order(monkeypatch):
+    captured = {}
+
+    def fake_fzf(options, header, **kwargs):
+        captured["options"] = [ansi_strip(opt) for opt in options]
+        return ("", None, True, "")
+
+    monkeypatch.setattr(_refine, "fzf_pick_with_query", fake_fzf)
+    items = _items("[X] Show 01", "[X] Show 02")
+    _refine.pick_group([], items)
+    assert captured["options"] == [
+        _refine.BEST_FIT, _refine.DONE, "[≡ Show All 2 Titles]",
+        _refine.EXCLUDE,
+    ]
+
+
+def test_pick_group_hides_best_fit_when_noop(monkeypatch):
+    captured = {}
+
+    def fake_fzf(options, header, **kwargs):
+        captured["options"] = [ansi_strip(opt) for opt in options]
+        return ("", None, True, "")
+
+    monkeypatch.setattr(_refine, "fzf_pick_with_query", fake_fzf)
+    items = _items("[X] Show 01", "[X] Show 02")
+    _refine.pick_group([], items, show_best_fit=False)
+    assert _refine.BEST_FIT not in captured["options"]
+    assert captured["options"][0] == _refine.DONE
 
 
 def test_best_fit_query_pins_audio_variant_to_dedupe_episodes():
