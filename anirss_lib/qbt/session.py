@@ -5,11 +5,15 @@ import http.cookiejar
 import json
 import re
 import secrets
+import shlex
+import shutil
+import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from anirss_lib.ansi import C_BLD, C_GRN, C_OFF, C_RED, C_YEL
+from anirss_lib.ansi import C_BLD, C_CYN, C_GRN, C_OFF, C_RED, C_YEL
 from anirss_lib.config import PASS_PATH, QbtConfig, SID_PATH, STATE_DIR
 from anirss_lib.logging import die, log
 
@@ -64,7 +68,7 @@ class QbtSession:
         """POST endpoint as multipart/form-data with one file attached.
 
         Needed for `/api/v2/torrents/add` when uploading a local .torrent
-        file — its `urls=` field only takes http/magnet, and a file path
+        file, its `urls=` field only takes http/magnet, and a file path
         on the anirss host means nothing to a remote qBittorrent.
         """
         boundary = "----anirss-" + secrets.token_hex(16)
@@ -231,7 +235,7 @@ def _offer_to_save_password(password: str) -> None:
     if _save_password(password):
         print(f"{C_GRN}saved.{C_OFF} Future logins reuse it until it stops working.")
     else:
-        print(f"{C_YEL}couldn't save the password — check the log; you'll be asked again next time{C_OFF}")
+        print(f"{C_YEL}couldn't save the password. Check the log; you'll be asked again next time{C_OFF}")
 
 
 def _effective_cookie_host(host: str) -> str:
@@ -255,7 +259,7 @@ def _make_sid_cookie(host: str, name: str, value: str, *, https: bool
 
     Three flags matter and got it wrong before:
       * `domain` must match cookielib's effective request host (see
-        `_effective_cookie_host` — needed for `localhost`).
+        `_effective_cookie_host`, needed for `localhost`).
       * `domain_specified=True` so the policy recognises this cookie's domain
         as the host the cookie will be sent to.
       * `discard=False` so the jar keeps it for subsequent requests.
@@ -289,6 +293,108 @@ def _try_qbt_sid(base_url: str) -> QbtSession | None:
     return None
 
 
+# -------- reachability + local auto-start --------
+# A login failure and an unreachable server are different problems. If we don't
+# separate them, a qBittorrent that simply isn't running looks exactly like a
+# wrong password: the saved password gets wiped and the prompt loop retries
+# against a dead port. So gate the whole login flow on an actual reachability
+# probe first, and for a local instance offer to start it.
+
+def _qbt_reachable(base_url: str, timeout: float = 3.0) -> bool:
+    """True if something answers HTTP at base_url. Any HTTP status counts as
+    reachable (even 401/403 means the WebUI is up); only a connection failure
+    or timeout is a miss."""
+    req = urllib.request.Request(f"{base_url}/api/v2/app/version")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp.read()
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+
+
+def _is_local_url(base_url: str) -> bool:
+    """True when base_url points at this machine, so we could start qBittorrent."""
+    host = (urllib.parse.urlparse(base_url).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+
+def _qbt_start_command(qbt_cfg: QbtConfig) -> list[str] | None:
+    """The command to launch a local qBittorrent, or None if we can't find one.
+    An explicit `start_command` in config wins; otherwise auto-detect, preferring
+    the headless qbittorrent-nox over the GUI qbittorrent."""
+    custom = qbt_cfg.get("start_command")
+    if custom:
+        return shlex.split(custom)
+    for binary in ("qbittorrent-nox", "qbittorrent"):
+        path = shutil.which(binary)
+        if path:
+            return [path]
+    return None
+
+
+def _launch_qbt(cmd: list[str]) -> None:
+    """Spawn qBittorrent detached so it keeps running after anirss exits."""
+    log("INFO", f"launching qBittorrent: {cmd}")
+    subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _wait_until_reachable(base_url: str, timeout: float = 30.0) -> bool:
+    """Poll base_url until it answers or `timeout` seconds pass."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _qbt_reachable(base_url, timeout=2.0):
+            return True
+        time.sleep(1.0)
+    return False
+
+
+def _ensure_qbt_reachable(qbt_cfg: QbtConfig, *, interactive: bool) -> None:
+    """Make sure the WebUI answers before any login attempt. For a local
+    instance that isn't running, offer to start it (interactive) or explain how
+    (non-interactive). Never returns until the server is up; it dies otherwise."""
+    base_url = qbt_cfg["url"]
+    if _qbt_reachable(base_url):
+        return
+
+    if not _is_local_url(base_url):
+        die(f"can't reach qBittorrent at {base_url}. It looks remote, so anirss "
+            f"can't start it for you. Is it running and reachable from here?")
+
+    cmd = _qbt_start_command(qbt_cfg)
+    if cmd is None:
+        die(f"qBittorrent isn't running at {base_url}, and no qbittorrent-nox or "
+            f"qbittorrent binary was found on PATH. Start it yourself, or set "
+            f"[qbittorrent] start_command in your config.")
+
+    if not interactive:
+        die(f"qBittorrent isn't running at {base_url}. Start it first, or run "
+            f"anirss interactively to be offered to launch it.")
+
+    print(f"{C_YEL}qBittorrent isn't running at {base_url}.{C_OFF}")
+    try:
+        answer = input(f"Start it now ({C_BLD}{' '.join(cmd)}{C_OFF})? [Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        die("cancelled")
+    if answer in ("n", "no"):
+        die("qBittorrent not started, nothing to do.")
+
+    print(f"{C_CYN}==>{C_OFF} starting qBittorrent, waiting for the WebUI…")
+    _launch_qbt(cmd)
+    if not _wait_until_reachable(base_url):
+        die(f"started qBittorrent but {base_url} still isn't answering after 30s. "
+            f"Make sure the WebUI is enabled on that port.")
+    print(f"{C_GRN}OK:{C_OFF} qBittorrent is up.")
+
+
 # -------- login flow --------
 
 def qbt_login(base_url: str, username: str, password: str
@@ -307,7 +413,7 @@ def qbt_login(base_url: str, username: str, password: str
         return None, f"can't reach qBittorrent at {base_url}: {e}"
     log("INFO", f"  -> body={body!r} set-cookie={set_cookie_headers!r}")
     # qBittorrent <5 returned "Ok."/"Fails."; v5+ returns HTTP 200 + empty body on success.
-    # cookielib silently drops the session cookie for `localhost` (eff-host munging — see
+    # cookielib silently drops the session cookie for `localhost` (eff-host munging, see
     # `_effective_cookie_host`), so we extract it from the raw Set-Cookie headers and
     # re-inject through `_make_sid_cookie` which mirrors that munging. The cookie name is
     # `SID` for v<5 and `QBT_SID_<port>` for v5+.
@@ -339,6 +445,7 @@ def login_with_retry(qbt_cfg: QbtConfig) -> QbtSession:
     username = qbt_cfg["username"]
     retries = int(qbt_cfg["login_retries"])
     use_saved = qbt_cfg["save_password"]
+    _ensure_qbt_reachable(qbt_cfg, interactive=True)
     sess = _try_qbt_sid(base_url)
     if sess is not None:
         return sess
@@ -350,8 +457,14 @@ def login_with_retry(qbt_cfg: QbtConfig) -> QbtSession:
             if qbt is not None:
                 log("INFO", "logged in with saved password")
                 return qbt
+            # Only treat this as a bad password if the server actually answered.
+            # If it went away between the reachability probe and now, the saved
+            # password is not at fault, so keep it and stop rather than wipe it.
+            if not _qbt_reachable(base_url):
+                die(f"can't reach qBittorrent at {base_url}. It went away "
+                    f"mid-login. Left the saved password in place.")
             print(f"{C_YEL}saved qBittorrent password was rejected "
-                  f"(did it change on the server?) — removing it{C_OFF}")
+                  f"(did it change on the server?). Removing it{C_OFF}")
             log("WARN", f"saved password rejected: {err}")
             _drop_password()
 
@@ -361,7 +474,7 @@ def login_with_retry(qbt_cfg: QbtConfig) -> QbtSession:
         except (EOFError, KeyboardInterrupt):
             die("cancelled")
         if not password:
-            print(f"{C_YEL}empty — try again{C_OFF}")
+            print(f"{C_YEL}empty, try again{C_OFF}")
             continue
         qbt, err = qbt_login(base_url, username, password)
         if qbt is not None:
@@ -376,6 +489,7 @@ def login_with_password(qbt_cfg: QbtConfig, password: str) -> QbtSession:
     """Non-interactive login: SID cache, then the given password, then a saved
     password. No prompts, no retry loop. Used by the non-interactive flag flow.
     """
+    _ensure_qbt_reachable(qbt_cfg, interactive=False)
     sess = _try_qbt_sid(qbt_cfg["url"])
     if sess is not None:
         return sess

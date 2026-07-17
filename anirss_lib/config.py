@@ -6,7 +6,7 @@ import re
 import sys
 import tomllib
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import NotRequired, TypedDict, cast
 
 from anirss_lib.ansi import C_CYN, C_DIM, C_GRN, C_OFF, C_YEL
 from anirss_lib.logging import die
@@ -25,6 +25,10 @@ class QbtConfig(TypedDict):
     username: str
     login_retries: int
     save_password: bool
+    # Command used to launch a local qBittorrent when it isn't running.
+    # Optional: when unset, anirss auto-detects qbittorrent-nox / qbittorrent
+    # on PATH. Only used for a local url (localhost / 127.0.0.1 / ::1).
+    start_command: NotRequired[str]
 
 
 class DownloadsConfig(TypedDict):
@@ -86,6 +90,10 @@ login_retries = 3
 # password. If a saved password is later rejected, it's dropped and you're
 # told the password likely changed.
 save_password = true
+# When qBittorrent isn't running and the url above is local, anirss offers to
+# start it for you. By default it auto-detects qbittorrent-nox (preferred) or
+# qbittorrent on PATH. Uncomment to force a specific launch command instead.
+#start_command = "qbittorrent"
 
 [downloads]
 # Subscriptions and bulk downloads create a per-name subdirectory under this.
@@ -182,7 +190,7 @@ def migrate_config() -> None:
     config.toml. Existing keys, values, and comments are left untouched.
     """
     if not CONFIG_PATH.exists():
-        print(f"{C_DIM}no config at {CONFIG_PATH} — run anirss once to bootstrap.{C_OFF}")
+        print(f"{C_DIM}no config at {CONFIG_PATH}. Run anirss once to bootstrap.{C_OFF}")
         return
     user_text = CONFIG_PATH.read_text()
     try:
@@ -193,7 +201,7 @@ def migrate_config() -> None:
     defaults = _split_toml_sections(DEFAULT_CONFIG_TOML)
     missing = [(name, body) for name, body in defaults if name and name not in user_cfg]
     if not missing:
-        print(f"{C_GRN}config up to date{C_OFF} — no new sections in {CONFIG_PATH}")
+        print(f"{C_GRN}config up to date{C_OFF}, no new sections in {CONFIG_PATH}")
         return
 
     appended = "\n".join(body.rstrip() for _, body in missing)
