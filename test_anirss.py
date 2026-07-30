@@ -253,8 +253,15 @@ _BESTFIT_CFG = {
     "preferred_groups": ["Erai-raws", "SubsPlease", "ASW"],
     "source_order": ["WEB-DL", "WEB", "BluRay", "WEBRip", "HDTV"],
     "preferred_resolution": "highest",
+    "target_mib_per_episode": 1000,
+    "max_size_ratio": 3.0,
+    "assumed_source": "WEB",
 }
 
+
+def _sized(*specs):
+    """(title, size) pairs -> Items, for the size-adequacy tests."""
+    return [Item(t, f"link-{i}", size=s) for i, (t, s) in enumerate(specs)]
 
 
 def test_source_of_detects_web_dl_over_bare_web():
@@ -413,6 +420,114 @@ def test_preferred_resolution_target_avoids_4k():
     items = _items("[Erai-raws] Show 2160p WEB-DL", "[Erai-raws] Show 1080p WEB-DL")
     best = bestfit.best_item(items, cfg)
     assert best.title == "[Erai-raws] Show 1080p WEB-DL"
+
+
+# -------- size adequacy --------
+
+def test_size_mib_parses_feed_strings():
+    assert bestfit.size_mib("6.2 GiB") == pytest.approx(6348.8)
+    assert bestfit.size_mib("301.4 MiB") == pytest.approx(301.4)
+    assert bestfit.size_mib("1.1 GiB") == pytest.approx(1126.4)
+    assert bestfit.size_mib("1,024 MiB") == pytest.approx(1024.0)  # thousands sep
+    assert bestfit.size_mib("6,2 GiB") == pytest.approx(6348.8)    # decimal comma
+    assert bestfit.size_mib("") is None
+    assert bestfit.size_mib("unknown") is None
+
+
+def test_episode_span_reads_declared_ranges():
+    assert bestfit.episode_span("[SubsPlease] Show (01-12) (1080p) [Batch]") == 12
+    assert bestfit.episode_span("[SSA] Show (1-12) [1080p][Batch]") == 12
+    assert bestfit.episode_span("[Majo] Show - 07~12 [BD 1080p]") == 6
+    assert bestfit.episode_span("[X] Show S01E01-E12 [1080p]") == 12
+    assert bestfit.episode_span("[X] Show - 04 [1080p].mkv") == 1
+    assert bestfit.episode_span("[X] Show S01E04 [1080p].mkv") == 1
+    # A season batch simply doesn't say; that's what the consensus is for.
+    assert bestfit.episode_span("[EMBER] Show (Season 1) [1080p] (Batch)") is None
+    # A date must never read as an episode range.
+    assert bestfit.episode_span("[X] Show (2021-07-12) [1080p] [Batch]") is None
+    assert bestfit.episode_span("[X] Show [1080p] x264-2 [Batch]") is None
+
+
+def test_consensus_episode_count_fills_in_season_batches():
+    items = _sized(
+        ("[EMBER] Show (Season 1) [BDRip] [1080p] (Batch)", "6.2 GiB"),
+        ("[SubsPlease] Show (01-12) (1080p) [Batch]", "12.8 GiB"),
+        ("[Majo] Show - 01~06 [BD 1080p]", "5.6 GiB"),
+    )
+    # 12 and 6 are both declared once; the wider span is likelier the season.
+    assert bestfit.consensus_episode_count(items) == 12
+    # EMBER declares nothing, so it inherits 12 and reads as ~530 MiB/ep.
+    assert bestfit.per_episode_mib(items[0], 12) == pytest.approx(529.1, abs=0.5)
+    # Majo's own declared half-batch wins over the consensus.
+    assert bestfit.per_episode_mib(items[2], 12) == pytest.approx(955.7, abs=0.5)
+
+
+def test_size_target_scales_with_resolution():
+    # Bitrate need scales as (res/1080) ** 1.5, not linearly and not flat.
+    assert bestfit._size_target_mib(1080, _BESTFIT_CFG) == pytest.approx(1000)
+    assert bestfit._size_target_mib(720, _BESTFIT_CFG) == pytest.approx(544, abs=5)
+    assert bestfit._size_target_mib(2160, _BESTFIT_CFG) == pytest.approx(2828, abs=5)
+
+
+def test_hevc_is_credited_for_its_efficiency():
+    # Same bytes, different codec: 700 MiB/ep of HEVC counts as ~1050 in x264
+    # terms (adequate), while the same size in x264 really is thin.
+    hevc = Item("[Erai-raws] Show (01-12) [1080p][HEVC][WEB-DL]", "l", size="8.2 GiB")
+    avc = Item("[Erai-raws] Show (01-12) [1080p][x264][WEB-DL]", "l", size="8.2 GiB")
+    assert bestfit._size_rank(hevc, _BESTFIT_CFG) == 1
+    assert bestfit._size_rank(avc, _BESTFIT_CFG) == -1
+
+
+def test_best_item_rejects_starved_encode():
+    # The Sonny Boy regression: a 6.2 GiB 12-episode BDRip beat a 12.8 GiB WEB
+    # batch purely because it was the only one tagging its source. At ~530
+    # MiB/ep (~790 in x264 terms) it is under the 1000 target, so bitrate
+    # adequacy now outranks having a nicer master.
+    items = _sized(
+        ("[EMBER] Sonny Boy (2021) (Season 1) [BDRip] "
+         "[1080p Dual Audio HEVC 10 bits] (Batch)", "6.2 GiB"),
+        ("[ASW] Sonny Boy [1080p HEVC x265 10Bit][AAC] (Batch)", "3.6 GiB"),
+        ("[SubsPlease] Sonny Boy (01-12) (1080p) [Batch]", "12.8 GiB"),
+    )
+    assert bestfit.best_item(items, _BESTFIT_CFG).title.startswith("[SubsPlease]")
+    ranks = [bestfit._size_rank(i, _BESTFIT_CFG, 12) for i in items]
+    assert ranks == [-1, -2, 1]  # thin, starved, adequate
+
+
+def test_best_item_does_not_chase_the_biggest_file():
+    # Past max_size_ratio the extra bits buy nothing visible, so a remux drops
+    # back to neutral instead of winning on bulk.
+    items = _sized(
+        ("[Erai-raws] Show S01 [1080p][BD Remux][Multiple Subtitle]", "79.3 GiB"),
+        ("[Erai-raws] Show (01-12) [1080p][BluRay][Multiple Subtitle]", "12.0 GiB"),
+    )
+    assert bestfit.best_item(items, _BESTFIT_CFG).size == "12.0 GiB"
+
+
+def test_movie_size_is_not_divided_by_the_season_count():
+    # No declared span and not a batch: unknown size (0), not 12 starved
+    # episodes (-2). Otherwise every film in a result set looks like garbage.
+    movie = Item("[Erai-raws] Show Movie (1080p) [WEB-DL]", "l", size="2.6 GiB")
+    assert bestfit.per_episode_mib(movie, 12) is None
+    assert bestfit._size_rank(movie, _BESTFIT_CFG, 12) == 0
+
+
+def test_unknown_size_stays_neutral_and_does_not_reorder():
+    # Every existing size-less test relies on this: no size info must leave the
+    # remaining fields deciding, exactly as before size adequacy existed.
+    items = _items("[Erai-raws] Show 1080p WEBRip", "[Erai-raws] Show 1080p WEB-DL")
+    assert all(bestfit._size_rank(i, _BESTFIT_CFG) == 0 for i in items)
+    assert bestfit.best_item(items, _BESTFIT_CFG).title.endswith("WEB-DL")
+
+
+def test_untagged_source_is_assumed_web_not_worst():
+    # SubsPlease and Erai-raws never write a source tag; that used to rank them
+    # below even an HDTV rip.
+    order = _BESTFIT_CFG["source_order"]
+    untagged = bestfit._source_rank("[SubsPlease] Show (01-12) (1080p)", order, "WEB")
+    assert untagged > bestfit._source_rank("[X] Show 1080p HDTV", order, "WEB")
+    # Opting out restores the old "rank it last" behaviour.
+    assert bestfit._source_rank("[SubsPlease] Show (01-12) (1080p)", order, "") == 0
 
 
 # -------- saved password persistence --------

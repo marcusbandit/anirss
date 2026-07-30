@@ -55,6 +55,9 @@ class BestfitConfig(TypedDict):
     preferred_groups: list[str]
     source_order: list[str]
     preferred_resolution: str
+    target_mib_per_episode: int
+    max_size_ratio: float
+    assumed_source: str
 
 
 class LoggingConfig(TypedDict):
@@ -135,12 +138,30 @@ filter = "0"
 # "[★ Try Best Fit]" in the refine picker auto-pins the best quality profile
 # (group + resolution + source) and refetches nyaa for every matching release.
 # Release groups ranked most-to-least trusted; the first listed wins ties.
-preferred_groups = ["Erai-raws", "SubsPlease", "ASW", "EMBER", "Judas"]
-# Source types best-to-worst. WEB-DL always beats WebRip; reorder to taste.
-source_order = ["WEB-DL", "WEB", "BluRay", "WEBRip", "HDTV"]
+preferred_groups = [
+    "Erai-raws", "SubsPlease", "ASW", "EMBER", "Judas",
+    "Osiris", "Moozzi2", "VCB-Studio", "Kawaiika-Raws",
+]
+# Source types best-to-worst. A finished show's BluRay beats its stream; for a
+# currently-airing one only the WEB entries can match anyway. Reorder to taste.
+source_order = ["BluRay", "WEB-DL", "WEB", "WEBRip", "HDTV"]
+# Groups like SubsPlease and Erai-raws never tag their source at all. Rather
+# than scoring those below every tagged release, assume they are what they
+# almost always are. Set to "" to go back to ranking untagged releases last.
+assumed_source = "WEB"
 # "highest" picks the sharpest available (2160p > 1080p > 720p). Set to a
 # number like "1080" to treat that as the sweet spot and avoid huge 4K files.
 preferred_resolution = "highest"
+# Bitrate floor, as the MiB one 1080p episode should weigh in x264 terms. A
+# release far under this is a starved encode (banding on gradients and dark
+# scenes) and loses to a properly sized one even from a better source. The
+# figure is normalised before comparing, so HEVC and AV1 releases are credited
+# for their efficiency and 720p/2160p targets scale off this 1080p baseline.
+target_mib_per_episode = 1000
+# Past this multiple of the target, extra bits stop buying visible quality, so
+# remuxes stop out-ranking a good encode on bulk alone. Raise it if you want
+# best fit to chase the largest release available.
+max_size_ratio = 3.0
 
 [logging]
 log_path = "~/.local/state/anirss/anirss.log"
