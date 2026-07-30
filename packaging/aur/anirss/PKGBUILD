@@ -6,7 +6,7 @@ pkgdesc="Search nyaa.si and hand the result to qBittorrent"
 arch=('any')
 url="https://github.com/marcusbandit/anirss"
 license=('GPL-3.0-or-later')
-depends=('python' 'fzf')
+depends=('python' 'fzf' 'python-setproctitle')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/marcusbandit/anirss/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('e20df6b165bc6a149400ad721ffbc6f4c7f674499d899d3376ab3a2406e12004')
 

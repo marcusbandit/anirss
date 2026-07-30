@@ -5,7 +5,7 @@ import os
 import sys
 
 import anirss_lib
-from anirss_lib import responsive, terminal
+from anirss_lib import proctitle, responsive, terminal
 from anirss_lib.ansi import (
     C_BLD, C_DIM, C_GRN, C_OFF, C_YEL, FILTER_PICKER_LINES,
     right_anchor,
@@ -517,6 +517,9 @@ def _run_interactive(initial_query: str, force_url: str | None,
 # ---- entry point ----
 
 def main() -> None:
+    # Before anything else, so `ps`/`htop`/`pidof` never show a bare "python3".
+    proctitle.apply()
+
     cfg = load_config()
     responsive.set_display(cfg["display"])
 

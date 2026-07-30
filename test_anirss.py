@@ -717,6 +717,26 @@ def test_missing_qbt_binary_is_reported():
             _session._ensure_qbt_reachable(_qbt_cfg(url="http://localhost:8080"))
 
 
+# -------- process title --------
+
+def test_proctitle_renames_the_process():
+    import pathlib
+
+    from anirss_lib import proctitle
+
+    proctitle.apply()
+    assert pathlib.Path("/proc/self/comm").read_text().strip() == "AniRSS"
+
+
+def test_proctitle_never_raises_on_a_long_name():
+    from anirss_lib import proctitle
+
+    # comm is capped at 15 chars by the kernel; over-long names must truncate,
+    # not blow up in the middle of startup.
+    proctitle.apply("A" * 64)
+    proctitle.apply(proctitle.PROC_NAME)
+
+
 # -------- add_exclude_to_query --------
 
 def test_add_exclude_to_query_single_word():
