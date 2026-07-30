@@ -256,6 +256,7 @@ _BESTFIT_CFG = {
 }
 
 
+
 def test_source_of_detects_web_dl_over_bare_web():
     assert bestfit.source_of("[X] Show 1080p WEB-DL") == ("WEB-DL", "WEB-DL")
     assert bestfit.source_of("[X] Show 1080p WEBRip")[0] == "WEBRip"
@@ -428,6 +429,16 @@ def _patch_pass_path(monkeypatch, tmp_path):
     monkeypatch.setattr(_session, "STATE_DIR", tmp_path)
 
 
+def _patch_qbt_up(monkeypatch):
+    """Report the WebUI as already answering.
+
+    login_with_retry now guarantees a reachable server before it touches
+    credentials, so the password tests below have to say the server is up or
+    they'd exercise the boot path instead of the thing they're testing.
+    """
+    monkeypatch.setattr(_session, "_qbt_reachable", lambda *a, **k: True)
+
+
 def test_password_save_load_roundtrip(tmp_path, monkeypatch):
     _patch_pass_path(monkeypatch, tmp_path)
     assert _session._load_password() is None
@@ -459,6 +470,7 @@ def test_drop_password_removes_file(tmp_path, monkeypatch):
 
 def test_login_uses_saved_password_without_prompting(tmp_path, monkeypatch):
     _patch_pass_path(monkeypatch, tmp_path)
+    _patch_qbt_up(monkeypatch)
     (tmp_path / "qbt.pass").write_text("saved-pw")
     monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
     seen = {}
@@ -480,6 +492,7 @@ def test_login_uses_saved_password_without_prompting(tmp_path, monkeypatch):
 
 def test_login_drops_rejected_saved_password_and_reprompts(tmp_path, monkeypatch):
     _patch_pass_path(monkeypatch, tmp_path)
+    _patch_qbt_up(monkeypatch)
     pass_path = tmp_path / "qbt.pass"
     pass_path.write_text("old-pw")
     monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
@@ -502,6 +515,7 @@ def test_login_drops_rejected_saved_password_and_reprompts(tmp_path, monkeypatch
 
 def test_login_offers_and_saves_new_password(tmp_path, monkeypatch):
     _patch_pass_path(monkeypatch, tmp_path)
+    _patch_qbt_up(monkeypatch)
     pass_path = tmp_path / "qbt.pass"
     monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
     monkeypatch.setattr(
@@ -516,6 +530,7 @@ def test_login_offers_and_saves_new_password(tmp_path, monkeypatch):
 
 def test_login_respects_save_password_false(tmp_path, monkeypatch):
     _patch_pass_path(monkeypatch, tmp_path)
+    _patch_qbt_up(monkeypatch)
     pass_path = tmp_path / "qbt.pass"
     pass_path.write_text("saved-pw")
     monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
@@ -536,6 +551,55 @@ def test_login_respects_save_password_false(tmp_path, monkeypatch):
     assert isinstance(sess, _session.QbtSession)
     assert calls == ["typed-pw"]          # saved password ignored, prompt used
     assert pass_path.read_text() == "saved-pw"  # left untouched
+
+
+# -------- qBittorrent auto-start --------
+
+def _patch_qbt_down_then_up(monkeypatch, launched):
+    """A local qBittorrent that answers only after it has been launched."""
+    monkeypatch.setattr(_session, "_qbt_reachable",
+                        lambda *a, **k: bool(launched))
+    monkeypatch.setattr(_session, "_qbt_start_command",
+                        lambda cfg: ["/usr/bin/qbittorrent-nox"])
+    monkeypatch.setattr(_session, "_launch_qbt", lambda cmd: launched.append(cmd))
+    monkeypatch.setattr(_session, "_wait_until_reachable", lambda *a, **k: True)
+
+
+def test_down_local_qbt_is_started_without_asking():
+    # Needing qBittorrent up is a precondition of everything anirss does, so
+    # the old [Y/n] prompt only ever had one useful answer.
+    launched = []
+    with pytest.MonkeyPatch.context() as mp:
+        _patch_qbt_down_then_up(mp, launched)
+        mp.setattr("builtins.input", lambda prompt="": pytest.fail(
+            "must not prompt before starting a local qBittorrent"))
+        _session._ensure_qbt_reachable(_qbt_cfg(url="http://localhost:8080"))
+    assert launched == [["/usr/bin/qbittorrent-nox"]]
+
+
+def test_reachable_qbt_is_never_relaunched():
+    launched = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_session, "_qbt_reachable", lambda *a, **k: True)
+        mp.setattr(_session, "_launch_qbt", lambda cmd: launched.append(cmd))
+        _session._ensure_qbt_reachable(_qbt_cfg(url="http://localhost:8080"))
+    assert launched == []
+
+
+def test_remote_qbt_is_not_started():
+    # Nothing to boot on this machine; say so instead of pretending.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_session, "_qbt_reachable", lambda *a, **k: False)
+        with pytest.raises(SystemExit):
+            _session._ensure_qbt_reachable(_qbt_cfg(url="http://nas.local:8080"))
+
+
+def test_missing_qbt_binary_is_reported():
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_session, "_qbt_reachable", lambda *a, **k: False)
+        mp.setattr(_session, "_qbt_start_command", lambda cfg: None)
+        with pytest.raises(SystemExit):
+            _session._ensure_qbt_reachable(_qbt_cfg(url="http://localhost:8080"))
 
 
 # -------- add_exclude_to_query --------

@@ -357,10 +357,15 @@ def _wait_until_reachable(base_url: str, timeout: float = 30.0) -> bool:
     return False
 
 
-def _ensure_qbt_reachable(qbt_cfg: QbtConfig, *, interactive: bool) -> None:
-    """Make sure the WebUI answers before any login attempt. For a local
-    instance that isn't running, offer to start it (interactive) or explain how
-    (non-interactive). Never returns until the server is up; it dies otherwise."""
+def _ensure_qbt_reachable(qbt_cfg: QbtConfig) -> None:
+    """Make sure the WebUI answers before any login attempt.
+
+    A local instance that isn't running is simply started: needing qBittorrent
+    up is a precondition of every operation anirss performs, so asking first
+    only ever produced one sensible answer. Non-interactive runs get the same
+    treatment, which is what makes `anirss -S <url>` usable from scripts and
+    keybinds. Never returns until the server is up; it dies otherwise.
+    """
     base_url = qbt_cfg["url"]
     if _qbt_reachable(base_url):
         return
@@ -375,19 +380,9 @@ def _ensure_qbt_reachable(qbt_cfg: QbtConfig, *, interactive: bool) -> None:
             f"qbittorrent binary was found on PATH. Start it yourself, or set "
             f"[qbittorrent] start_command in your config.")
 
-    if not interactive:
-        die(f"qBittorrent isn't running at {base_url}. Start it first, or run "
-            f"anirss interactively to be offered to launch it.")
-
     print(f"{C_YEL}qBittorrent isn't running at {base_url}.{C_OFF}")
-    try:
-        answer = input(f"Start it now ({C_BLD}{' '.join(cmd)}{C_OFF})? [Y/n] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        die("cancelled")
-    if answer in ("n", "no"):
-        die("qBittorrent not started, nothing to do.")
-
-    print(f"{C_CYN}==>{C_OFF} starting qBittorrent, waiting for the WebUI…")
+    print(f"{C_CYN}==>{C_OFF} starting it ({C_BLD}{' '.join(cmd)}{C_OFF}), "
+          f"waiting for the WebUI…")
     _launch_qbt(cmd)
     if not _wait_until_reachable(base_url):
         die(f"started qBittorrent but {base_url} still isn't answering after 30s. "
@@ -445,7 +440,7 @@ def login_with_retry(qbt_cfg: QbtConfig) -> QbtSession:
     username = qbt_cfg["username"]
     retries = int(qbt_cfg["login_retries"])
     use_saved = qbt_cfg["save_password"]
-    _ensure_qbt_reachable(qbt_cfg, interactive=True)
+    _ensure_qbt_reachable(qbt_cfg)
     sess = _try_qbt_sid(base_url)
     if sess is not None:
         return sess
@@ -489,7 +484,7 @@ def login_with_password(qbt_cfg: QbtConfig, password: str) -> QbtSession:
     """Non-interactive login: SID cache, then the given password, then a saved
     password. No prompts, no retry loop. Used by the non-interactive flag flow.
     """
-    _ensure_qbt_reachable(qbt_cfg, interactive=False)
+    _ensure_qbt_reachable(qbt_cfg)
     sess = _try_qbt_sid(qbt_cfg["url"])
     if sess is not None:
         return sess
