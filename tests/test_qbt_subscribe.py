@@ -71,3 +71,31 @@ def test_do_subscribe_default_must_not_contain_is_empty():
     _, kwargs = next(p for p in qbt.posts if p[0] == "/api/v2/rss/setRule")
     rule = json.loads(kwargs["ruleDef"])
     assert rule["mustNotContain"] == ""
+
+
+def _rule_from(qbt):
+    """Pull the ruleDef payload out of the recorded setRule post."""
+    for endpoint, kwargs in qbt.posts:
+        if endpoint == "/api/v2/rss/setRule":
+            return json.loads(kwargs["ruleDef"])
+    raise AssertionError("no setRule call recorded")
+
+
+def test_do_subscribe_puts_tags_in_torrent_params():
+    qbt = RecordingQbt()
+    actions.do_subscribe(qbt, "http://feed", "Show", "/tmp/save",
+                         tags=["Anime", "anirss"])
+    params = _rule_from(qbt)["torrentParams"]
+    assert params["tags"] == ["Anime", "anirss"]
+    # torrentParams supersedes the flat savePath, so it has to carry the path
+    # and pin manual torrent management or qB would apply its global TMM.
+    assert params["save_path"] == "/tmp/save/Show"
+    assert params["use_auto_tmm"] is False
+
+
+def test_do_subscribe_without_tags_keeps_legacy_rule_shape():
+    qbt = RecordingQbt()
+    actions.do_subscribe(qbt, "http://feed", "Show", "/tmp/save")
+    rule = _rule_from(qbt)
+    assert "torrentParams" not in rule
+    assert rule["savePath"] == "/tmp/save/Show"

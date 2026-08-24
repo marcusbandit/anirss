@@ -115,6 +115,32 @@ def _torrents_add_error(body: str) -> str | None:
     return None
 
 
+# -------- tags --------
+
+def _clean_tags(tags: list[str] | None) -> list[str]:
+    """Trim, drop blanks, de-duplicate (order-preserving). qBittorrent splits
+    tags on commas itself, so a comma inside one would silently become two."""
+    seen: list[str] = []
+    for tag in tags or []:
+        for piece in str(tag).split(","):
+            piece = piece.strip()
+            if piece and piece not in seen:
+                seen.append(piece)
+    return seen
+
+
+def _tags_param(tags: list[str] | None) -> dict:
+    """`torrents/add` takes tags as one comma-separated field; omit it entirely
+    when nothing is configured so qBittorrent's own defaults still apply."""
+    clean = _clean_tags(tags)
+    return {"tags": ",".join(clean)} if clean else {}
+
+
+def _tags_note(tags: list[str] | None) -> str:
+    clean = _clean_tags(tags)
+    return f" {C_DIM}[{', '.join(clean)}]{C_OFF}" if clean else ""
+
+
 # -------- user-facing actions --------
 
 def _unique_rule_name(qbt: QbtSession, name: str, feed_url: str,
@@ -137,7 +163,8 @@ def _unique_rule_name(qbt: QbtSession, name: str, feed_url: str,
 
 
 def do_subscribe(qbt: QbtSession, feed_url: str, name: str, save_base: str,
-                 endpoint_name: str = "", must_not_contain: str = "") -> str:
+                 endpoint_name: str = "", must_not_contain: str = "",
+                 tags: list[str] | None = None) -> str:
     name = _unique_rule_name(qbt, name, feed_url, endpoint_name)
     save_path = os.path.join(save_base, name)
     print(f"{C_CYN}==>{C_OFF} adding feed {C_BLD}{name}{C_OFF}")
@@ -157,18 +184,34 @@ def do_subscribe(qbt: QbtSession, feed_url: str, name: str, save_base: str,
         "assignedCategory": "",
         "savePath": save_path,
     }
-    print(f"{C_CYN}==>{C_OFF} adding rule  {C_BLD}{name}{C_OFF} -> {save_path}")
+    rule_tags = _clean_tags(tags)
+    if rule_tags:
+        # Rules only learned about tags in qBittorrent 4.6, via `torrentParams`,
+        # which supersedes the flat keys above wholesale when present, so the
+        # save path has to be restated inside it along with the manual-TMM flag
+        # that the flat `savePath` used to imply. Older builds ignore the block
+        # and fall back to the flat keys: untagged, but otherwise correct.
+        rule["torrentParams"] = {
+            "save_path": save_path,
+            "use_auto_tmm": False,
+            "tags": rule_tags,
+        }
+    print(f"{C_CYN}==>{C_OFF} adding rule  {C_BLD}{name}{C_OFF} -> {save_path}"
+          f"{_tags_note(tags)}")
     qbt.post("/api/v2/rss/setRule", ruleName=name, ruleDef=json.dumps(rule))
     return name
 
 
-def do_download(qbt: QbtSession, links: list[str], name: str, save_base: str) -> None:
+def do_download(qbt: QbtSession, links: list[str], name: str, save_base: str,
+                tags: list[str] | None = None) -> None:
     save_path = os.path.join(save_base, name)
-    print(f"{C_CYN}==>{C_OFF} adding {len(links)} torrent(s) -> {save_path}")
+    print(f"{C_CYN}==>{C_OFF} adding {len(links)} torrent(s) -> {save_path}"
+          f"{_tags_note(tags)}")
     body = qbt.post(
         "/api/v2/torrents/add",
         urls="\n".join(links),
         savepath=save_path,
+        **_tags_param(tags),
     )
     err = _torrents_add_error(body)
     if err:
@@ -176,7 +219,7 @@ def do_download(qbt: QbtSession, links: list[str], name: str, save_base: str) ->
 
 
 def do_upload_local_torrent(qbt: QbtSession, path: str, name: str,
-                            save_base: str) -> None:
+                            save_base: str, tags: list[str] | None = None) -> None:
     """Upload a local .torrent file's bytes to qBittorrent.
 
     qBittorrent's `urls=` field only handles http/magnet, so we read the
@@ -193,23 +236,26 @@ def do_upload_local_torrent(qbt: QbtSession, path: str, name: str,
         die(f"{path} is empty")
     file_name = os.path.basename(path) or "file.torrent"
     print(f"{C_CYN}==>{C_OFF} uploading {C_BLD}{file_name}{C_OFF} "
-          f"({_human_bytes(len(data))}) -> {save_path}")
+          f"({_human_bytes(len(data))}) -> {save_path}{_tags_note(tags)}")
     body = qbt.post_multipart(
         "/api/v2/torrents/add",
         file_field="torrents",
         file_name=file_name,
         file_bytes=data,
         savepath=save_path,
+        **_tags_param(tags),
     )
     err = _torrents_add_error(body)
     if err:
         die(err)
 
 
-def do_movie(qbt: QbtSession, title: str, link: str, movie_path: str) -> None:
-    print(f"{C_CYN}==>{C_OFF} downloading movie -> {movie_path}")
+def do_movie(qbt: QbtSession, title: str, link: str, movie_path: str,
+             tags: list[str] | None = None) -> None:
+    print(f"{C_CYN}==>{C_OFF} downloading movie -> {movie_path}{_tags_note(tags)}")
     print(f"    {C_DIM}{title}{C_OFF}")
-    body = qbt.post("/api/v2/torrents/add", urls=link, savepath=movie_path)
+    body = qbt.post("/api/v2/torrents/add", urls=link, savepath=movie_path,
+                    **_tags_param(tags))
     err = _torrents_add_error(body)
     if err:
         die(err)

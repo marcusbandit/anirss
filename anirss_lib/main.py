@@ -56,6 +56,11 @@ def _save_base_for(parsed: "ParsedArgs", cfg: "AnirssConfig") -> str:
     return cfg["downloads"]["save_base"]
 
 
+def _tags_for(cfg: "AnirssConfig") -> list[str]:
+    """Tags stamped on every torrent and RSS rule anirss creates."""
+    return list(cfg["qbittorrent"].get("tags") or [])
+
+
 def _resolve_password(*, password_stdin: bool) -> str | None:
     """Locate a qBittorrent password without prompting.
     Env var wins; --password-stdin reads one line from stdin; otherwise None.
@@ -271,7 +276,7 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointStat
         qbt = _login_for(parsed, cfg)
         name = parsed.name or "anirss"
         do_upload_local_torrent(qbt, parsed.local_torrent_path, name,
-                                _save_base_for(parsed, cfg))
+                                _save_base_for(parsed, cfg), tags=_tags_for(cfg))
         maybe_refresh_feed_cache(qbt)
         log("INFO", "done (non-interactive, -T)")
         print(f"{C_GRN}done.{C_OFF}")
@@ -286,7 +291,8 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointStat
             qbt = _login_for(parsed, cfg)
             name = parsed.name or "anirss"
             do_upload_local_torrent(qbt, initial_query, name,
-                                    _save_base_for(parsed, cfg))
+                                    _save_base_for(parsed, cfg),
+                                    tags=_tags_for(cfg))
             maybe_refresh_feed_cache(qbt)
             log("INFO", "done (non-interactive, local torrent)")
             print(f"{C_GRN}done.{C_OFF}")
@@ -295,7 +301,7 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointStat
             qbt = _login_for(parsed, cfg)
             name = parsed.name or "anirss"
             do_download(qbt, [initial_query], name,
-                        _save_base_for(parsed, cfg))
+                        _save_base_for(parsed, cfg), tags=_tags_for(cfg))
             maybe_refresh_feed_cache(qbt)
             log("INFO", "done (non-interactive, one-shot URL)")
             print(f"{C_GRN}done.{C_OFF}")
@@ -329,20 +335,24 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointStat
 
     if parsed.subscribe:
         do_subscribe(qbt, feed_url_for_sub, default_name, _save_base_for(parsed, cfg),
-                     endpoint_name=sub_endpoint_name, must_not_contain=must_not_contain)
+                     endpoint_name=sub_endpoint_name, must_not_contain=must_not_contain,
+                     tags=_tags_for(cfg))
         if must_not_contain:
             print(f"{C_DIM}exclusions apply via the qB rule (mustNotContain): "
                   f"{must_not_contain}{C_OFF}")
     elif parsed.download_all:
         links = [it.link for it in items]
-        do_download(qbt, links, default_name, _save_base_for(parsed, cfg))
+        do_download(qbt, links, default_name, _save_base_for(parsed, cfg),
+                    tags=_tags_for(cfg))
     elif parsed.download_n is not None:
         chosen = _pick_top_n(items, parsed.download_n)
         links = [it.link for it in chosen]
-        do_download(qbt, links, default_name, _save_base_for(parsed, cfg))
+        do_download(qbt, links, default_name, _save_base_for(parsed, cfg),
+                    tags=_tags_for(cfg))
     elif parsed.movie:
         top = _pick_top_n(items, 1)[0]
-        do_movie(qbt, top.title, top.link, cfg["downloads"]["movie_path"])
+        do_movie(qbt, top.title, top.link, cfg["downloads"]["movie_path"],
+                 tags=_tags_for(cfg))
 
     maybe_refresh_feed_cache(qbt)
     log("INFO", "done (non-interactive)")
@@ -483,29 +493,32 @@ def _run_interactive(initial_query: str, force_url: str | None,
 
     qbt = _login_for(parsed, cfg)
     save_base = _save_base_for(parsed, cfg)
+    tags = _tags_for(cfg)
     hidden_tag = f" {C_DIM}(hidden){C_OFF}" if parsed.hidden else ""
     summary: str | None = None
     if feed_url:
         name = do_subscribe(qbt, feed_url, name, save_base,
                             endpoint_name=sub_endpoint_name,
-                            must_not_contain=must_not_contain)
+                            must_not_contain=must_not_contain,
+                            tags=tags)
         summary = (f"{C_GRN}✓{C_OFF} Subscribed: {C_BLD}{name}{C_OFF}{hidden_tag}"
                    f"  {C_DIM}(feed: {feed_url}){C_OFF}")
         if must_not_contain:
             summary += (f"\n{C_DIM}exclusions apply via the qB rule "
                        f"(mustNotContain): {must_not_contain}{C_OFF}")
     elif download_links:
-        do_download(qbt, download_links, name, save_base)
+        do_download(qbt, download_links, name, save_base, tags=tags)
         plural = "" if n_dl == 1 else "s"
         summary = (f"{C_GRN}✓{C_OFF} Downloaded {C_BLD}{n_dl}{C_OFF} "
                    f"torrent{plural} → {C_BLD}{name}{C_OFF}{hidden_tag}")
     elif local_torrent_path:
-        do_upload_local_torrent(qbt, local_torrent_path, name, save_base)
+        do_upload_local_torrent(qbt, local_torrent_path, name, save_base, tags=tags)
         summary = (f"{C_GRN}✓{C_OFF} Uploaded "
                    f"{C_BLD}{os.path.basename(local_torrent_path)}{C_OFF}"
                    f" → {C_BLD}{name}{C_OFF}{hidden_tag}")
     elif movie_choice:
-        do_movie(qbt, movie_choice.title, movie_choice.link, cfg["downloads"]["movie_path"])
+        do_movie(qbt, movie_choice.title, movie_choice.link,
+                 cfg["downloads"]["movie_path"], tags=tags)
         summary = f"{C_GRN}✓{C_OFF} Movie: {C_BLD}{movie_choice.title}{C_OFF}"
 
     maybe_refresh_feed_cache(qbt)

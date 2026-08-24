@@ -25,6 +25,8 @@ class QbtConfig(TypedDict):
     username: str
     login_retries: int
     save_password: bool
+    # Tags stamped on every torrent anirss hands to qBittorrent.
+    tags: list[str]
     # Command used to launch a local qBittorrent when it isn't running.
     # Optional: when unset, anirss auto-detects qbittorrent-nox / qbittorrent
     # on PATH. Only used for a local url (localhost / 127.0.0.1 / ::1).
@@ -93,6 +95,10 @@ login_retries = 3
 # password. If a saved password is later rejected, it's dropped and you're
 # told the password likely changed.
 save_password = true
+# Tags applied to everything anirss adds: one-off downloads, uploaded .torrent
+# files, movies, and the RSS auto-download rules it creates. List as many as you
+# like (["Anime", "anirss"]) or set to [] to tag nothing.
+tags = ["Anime"]
 # When qBittorrent isn't running and the url above is local, anirss offers to
 # start it for you. By default it auto-detects qbittorrent-nox (preferred) or
 # qbittorrent on PATH. Uncomment to force a specific launch command instead.

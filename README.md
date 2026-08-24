@@ -90,6 +90,17 @@ Subscribing to the same show from a second endpoint doesn't overwrite the existi
 
 `[search]` (the old single-endpoint config block) is now the deprecated legacy fallback: it only applies when no `[[endpoint]]` is defined at all. Existing configs that only have `[search]` keep working exactly as before.
 
+## Tags
+
+Everything anirss hands to qBittorrent is tagged `Anime`: one-off downloads, uploaded `.torrent` files, movies, and the RSS auto-download rules it creates, so a subscription keeps tagging every new episode it grabs. Change or extend the list in `~/.config/anirss/config.toml`:
+
+```toml
+[qbittorrent]
+tags = ["Anime", "anirss"]
+```
+
+Set `tags = []` to tag nothing. Tagging RSS rules needs qBittorrent 4.6 or newer; on older builds the rules still work, just untagged.
+
 ## Usage
 
 ```text
