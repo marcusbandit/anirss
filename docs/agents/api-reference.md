@@ -309,7 +309,10 @@ variable in the environment of the `anirss --serve` process.
 `username` from the config file the same way, for a client that runs its own
 qBittorrent beside anirss. `ANIRSS_QBT_URL` also drops any
 `[[qbittorrent.client]]` blocks, so the server has that one qBittorrent and no
-other. `anirss -c <name> --serve` likewise serves one client from the config. If qBittorrent
+other. When that address is not the one `[qbittorrent] url` names, it keeps its
+session and saved password apart (`qbt-env-<host>_<port>.sid` and `.pass`), so
+anirss never sends the configured server's cookie or saved password to it.
+`anirss -c <name> --serve` likewise serves one client from the config. If qBittorrent
 needs a login and none is available, qBittorrent routes return `503
 qbt_auth_required`.
 

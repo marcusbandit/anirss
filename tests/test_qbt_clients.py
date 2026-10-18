@@ -94,7 +94,21 @@ def test_the_environment_url_replaces_the_configured_clients(tmp_path, monkeypat
     assert qbt_client(config_mod.load_config(path, bootstrap=False))["name"] == "seedbox"
     monkeypatch.setenv("ANIRSS_QBT_URL", "http://127.0.0.1:47321")
     clients = qbt_clients(config_mod.load_config(path, bootstrap=False))
-    assert [(c["name"], c["url"]) for c in clients] == [(DEFAULT_CLIENT, "http://127.0.0.1:47321")]
+    assert [(c["name"], c["url"]) for c in clients] == [("env-127.0.0.1_47321", "http://127.0.0.1:47321")]
+
+
+def test_a_server_only_the_environment_names_keeps_its_own_session(tmp_path, monkeypatch, isolate_state):
+    # qbt.sid and qbt.pass belong to the server the config names; an app that
+    # points anirss elsewhere must not send that server's cookie or password.
+    path = tmp_path / "config.toml"
+    path.write_text('[qbittorrent]\nurl = "http://192.0.2.10:8080"\n')
+    monkeypatch.setenv("ANIRSS_QBT_URL", "http://me:pw@localhost:8080/")
+    local = qbt_client(config_mod.load_config(path, bootstrap=False))
+    assert local["name"] == "env-localhost_8080"
+    assert session_mod._client_file(session_mod.SID_PATH, local["name"]) == isolate_state / "qbt-env-localhost_8080.sid"
+    # The same server the config names keeps the files it always had
+    monkeypatch.setenv("ANIRSS_QBT_URL", "http://192.0.2.10:8080/")
+    assert qbt_client(config_mod.load_config(path, bootstrap=False))["name"] == DEFAULT_CLIENT
 
 
 def test_the_default_config_still_parses_with_the_client_example():

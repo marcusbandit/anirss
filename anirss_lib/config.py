@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import tomllib
+import urllib.parse
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
@@ -351,14 +352,29 @@ QBT_ENV = (("url", "ANIRSS_QBT_URL"), ("username", "ANIRSS_QBT_USERNAME"))
 
 
 def _env_overrides(cfg: AnirssConfig) -> None:
+    configured = str(cfg["qbittorrent"].get("url") or "").rstrip("/")
     for key, name in QBT_ENV:
         value = os.environ.get(name, "").strip()
         if value:
             cfg["qbittorrent"][key] = value
+    url = os.environ.get("ANIRSS_QBT_URL", "").strip()
+    if not url:
+        return
     # The app names the one client it wants, so the user's own list of
     # [[qbittorrent.client]] blocks would only let a caller reach past it.
-    if os.environ.get("ANIRSS_QBT_URL", "").strip():
-        cfg["qbittorrent"].pop("client", None)
+    cfg["qbittorrent"].pop("client", None)
+    # A server the config does not name is not the one the saved session and
+    # password (qbt.sid, qbt.pass) belong to: it gets files of its own, so its
+    # first login never sends another server's cookie or password.
+    if url.rstrip("/") != configured:
+        cfg["qbittorrent"]["name"] = _env_client_name(url)
+
+
+def _env_client_name(url: str) -> str:
+    """A client name for an address only the environment gives, safe as part
+    of a file name: env-127.0.0.1_47321 for http://127.0.0.1:47321."""
+    host = urllib.parse.urlsplit(url).netloc.rsplit("@", 1)[-1] or "qbittorrent"
+    return "env-" + re.sub(r"[^A-Za-z0-9._-]", "_", host)
 
 
 def build_config(user_cfg: dict | None = None) -> AnirssConfig:
