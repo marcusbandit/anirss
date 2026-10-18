@@ -439,9 +439,19 @@ class RemovePlan:
 
 
 def plan_remove(qbt: QbtSession, names: list[str], *, drop_torrents: bool,
-                drop_files: bool, save_base: str) -> list[RemovePlan]:
+                drop_files: bool, save_base: str,
+                local_files: bool = True) -> list[RemovePlan]:
     """Validate every target up front (so a typo can't half-destroy) and
-    gather what removal would touch. Raises NotFoundError on unknown names."""
+    gather what removal would touch. Raises NotFoundError on unknown names.
+
+    Without `local_files` the client's files are on another machine: they
+    are never read here, so the size is the torrents' as qBittorrent says,
+    and deleting them without their torrents is refused, since only
+    qBittorrent can reach them."""
+    if drop_files and not drop_torrents and not local_files:
+        raise ValidationError("this client's files are not on this machine: anirss "
+                              "can only delete them through qBittorrent, together "
+                              "with their torrents")
     rules = qbt.get_json("/api/v2/rss/rules") or {}
     if not isinstance(rules, dict):
         rules = {}
@@ -458,8 +468,13 @@ def plan_remove(qbt: QbtSession, names: list[str], *, drop_torrents: bool,
         feed_path = _find_feed_path(qbt, feed_url) if feed_url else None
         torrents = (_torrents_for_savepath(qbt, save_path)
                     if (drop_torrents or drop_files) else [])
-        size_bytes = (_dir_size_bytes(save_path)
-                      if (drop_files and os.path.isdir(save_path)) else 0)
+        if not drop_files:
+            size_bytes = 0
+        elif local_files:
+            size_bytes = _dir_size_bytes(save_path) if os.path.isdir(save_path) else 0
+        else:
+            size_bytes = sum(t["size"] for t in torrents
+                             if isinstance(t.get("size"), int))
         plans.append(RemovePlan(name, feed_url, feed_path, save_path, torrents,
                                 size_bytes, len(torrents)))
     if missing:
@@ -468,18 +483,22 @@ def plan_remove(qbt: QbtSession, names: list[str], *, drop_torrents: bool,
     return plans
 
 
-def _is_inside(path: str, roots: list[str]) -> bool:
-    real = os.path.realpath(path)
+def _is_inside(path: str, roots: list[str], *, resolve: bool = True) -> bool:
+    # Another machine's paths cannot be resolved here: compared as written
+    norm = os.path.realpath if resolve else os.path.normpath
+    real = norm(path)
     for root in roots:
-        root_real = os.path.realpath(_norm_path(root))
-        if real != root_real and real.startswith(root_real + os.sep):
+        root_real = norm(_norm_path(root))
+        if real != root_real and real.startswith(root_real.rstrip(os.sep) + os.sep):
             return True
     return False
 
 
-def check_confined(plans: list[RemovePlan], roots: list[str]) -> None:
+def check_confined(plans: list[RemovePlan], roots: list[str], *,
+                   local_files: bool = True) -> None:
     """Raise ValidationError if any plan's files lie outside `roots`."""
-    outside = [p.save_path for p in plans if not _is_inside(p.save_path, roots)]
+    outside = [p.save_path for p in plans
+               if not _is_inside(p.save_path, roots, resolve=local_files)]
     if outside:
         raise ValidationError("refusing to delete files outside the download "
                               f"roots: {', '.join(outside)}")
@@ -488,6 +507,7 @@ def check_confined(plans: list[RemovePlan], roots: list[str]) -> None:
 def execute_remove(qbt: QbtSession, plans: list[RemovePlan], *,
                    drop_torrents: bool, drop_files: bool,
                    confine_to: list[str] | None = None,
+                   local_files: bool = True,
                    notify=None) -> None:
     """Carry out plan_remove()'s plans: torrents, then feed, then rule, then
     files. `confine_to` (the API passes the configured download roots)
@@ -495,7 +515,7 @@ def execute_remove(qbt: QbtSession, plans: list[RemovePlan], *,
     `notify(msg)` receives one line per completed step."""
     notify = notify or (lambda _msg: None)
     if drop_files and confine_to is not None:
-        check_confined(plans, confine_to)
+        check_confined(plans, confine_to, local_files=local_files)
     for p in plans:
         if drop_torrents and p.torrents:
             hashes = "|".join(t["hash"] for t in p.torrents
@@ -511,7 +531,8 @@ def execute_remove(qbt: QbtSession, plans: list[RemovePlan], *,
         qbt.post("/api/v2/rss/removeRule", ruleName=p.name)
         notify(f"removed rule {p.name}")
         # Files: delete the directory unless qB already cleaned it (drop_torrents+drop_files).
-        if drop_files and not drop_torrents and os.path.isdir(p.save_path):
+        # Never on another machine's client: the same path here is not its.
+        if drop_files and not drop_torrents and local_files and os.path.isdir(p.save_path):
             _safe_rmtree(p.save_path)
             notify(f"deleted files at {p.save_path}")
 

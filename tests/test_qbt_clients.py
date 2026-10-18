@@ -12,9 +12,9 @@ from anirss_lib import config as config_mod
 from anirss_lib import server
 from anirss_lib.api import Anirss
 from anirss_lib.cli.args import take_client_flag
-from anirss_lib.errors import ConfigError, NotFoundError, QbtAuthError
+from anirss_lib.errors import ConfigError, NotFoundError, QbtAuthError, ValidationError
 from anirss_lib.qbt import session as session_mod
-from anirss_lib.qbt.clients import DEFAULT_CLIENT, qbt_client, qbt_clients
+from anirss_lib.qbt.clients import DEFAULT_CLIENT, local_files, qbt_client, qbt_clients
 
 SEEDBOX = "http://192.0.2.10:8080"
 LOCAL = "http://localhost:8080"
@@ -409,3 +409,115 @@ def test_an_unknown_client_is_not_found(api):
     assert status == 404 and body["error"]["type"] == "not_found"
     status, _ = call("POST", "/movie", {"link": MAGNET, "client": 5})
     assert status == 400
+
+
+# ---- each client's own download roots -----------------------------------
+
+def test_a_client_on_this_machine_has_its_files_here_and_another_does_not():
+    seedbox, local = qbt_clients(config_mod.build_config(TWO))
+    assert not local_files(seedbox) and local_files(local)
+    nas = qbt_client(config_mod.build_config({"qbittorrent": {"client": [
+        {"name": "nas", "url": "http://192.0.2.5:8080", "local_files": True}]}}))
+    assert local_files(nas)
+
+
+def test_a_block_sets_its_own_roots():
+    cfg = config_mod.build_config({"qbittorrent": {"client": [
+        {"name": "seedbox", "url": SEEDBOX, "save_base": "/srv/anime"},
+        {"name": "local", "url": LOCAL, "save_base": "~/Anime"}]}})
+    seedbox, local = qbt_clients(cfg)
+    assert seedbox["save_base"] == "/srv/anime"
+    assert local["save_base"] == os.path.expanduser("~/Anime")
+    assert "save_base" not in qbt_client(config_mod.build_config(TWO))
+
+
+@pytest.mark.parametrize("block, message", [
+    # Nothing on the seedbox would expand this machine's home
+    ({"name": "seedbox", "url": SEEDBOX, "save_base": "~/Anime"}, "not expanded there"),
+    ({"name": "seedbox", "url": SEEDBOX, "movie_path": ""}, "must be a path"),
+    ({"name": "seedbox", "url": SEEDBOX, "local_files": "yes"}, "true or false"),
+])
+def test_a_bad_root_is_a_config_error(block, message):
+    with pytest.raises(ConfigError, match=message):
+        qbt_clients(config_mod.build_config({"qbittorrent": {"client": [block]}}))
+
+
+class RuleQbt(FakeQbt):
+    """A qBittorrent with one subscription, `Frieren`, and its torrent."""
+
+    def __init__(self, save_path):
+        super().__init__()
+        self.save_path = save_path
+
+    def get_json(self, endpoint, **params):
+        self.gets.append(endpoint)
+        if endpoint == "/api/v2/rss/rules":
+            return {"Frieren": {"affectedFeeds": [], "savePath": self.save_path}}
+        if endpoint == "/api/v2/torrents/info":
+            return [{"hash": "ab" * 20, "save_path": self.save_path, "size": 5000}]
+        return {}
+
+
+@pytest.fixture
+def rooted(monkeypatch, tmp_path):
+    """Two clients, the seedbox with roots of its own on its own machine,
+    and this machine's [downloads] holding a folder of the same name."""
+    local_base = tmp_path / "anime"
+    (local_base / "Frieren").mkdir(parents=True)
+    (local_base / "Frieren" / "ep01.mkv").write_bytes(b"x" * 10)
+    logins = Logins()
+    logins.qbts[SEEDBOX] = RuleQbt("/srv/anime/Frieren")
+    logins.qbts[LOCAL] = RuleQbt(str(local_base / "Frieren"))
+    monkeypatch.setattr("anirss_lib.api.login_with_password", logins)
+    ani = Anirss({"downloads": {"save_base": str(local_base)}, "qbittorrent": {"client": [
+        {"name": "seedbox", "url": SEEDBOX, "save_base": "/srv/anime"},
+        {"name": "local", "url": LOCAL}]}})
+    return ani, logins, local_base
+
+
+def test_a_download_lands_under_its_clients_own_root(rooted):
+    ani, _logins, local_base = rooted
+    assert ani.download([MAGNET], name="Frieren").save_path == "/srv/anime/Frieren"
+    assert ani.download([MAGNET], name="Frieren", client="local").save_path == \
+        str(local_base / "Frieren")
+
+
+def test_another_machines_files_are_never_deleted_here(rooted):
+    ani, logins, local_base = rooted
+    # Without its torrents only qBittorrent could reach them: refused, and
+    # this machine's folder of the same name is left alone.
+    with pytest.raises(ValidationError, match="not on this machine"):
+        ani.remove(["Frieren"], drop_files=True)
+    assert (local_base / "Frieren" / "ep01.mkv").exists()
+    # With them, qBittorrent deletes the files on its own disk; the size is
+    # the torrents', and the folder here is still untouched.
+    plan, = ani.remove(["Frieren"], drop_torrents=True, drop_files=True)
+    assert plan.size_bytes == 5000
+    delete = [f for e, f in logins.qbts[SEEDBOX].posts if e == "/api/v2/torrents/delete"]
+    assert delete == [{"hashes": "ab" * 20, "deleteFiles": "true"}]
+    assert (local_base / "Frieren" / "ep01.mkv").exists()
+
+
+def test_files_on_this_machine_are_still_deleted_here(rooted):
+    ani, _logins, local_base = rooted
+    plan, = ani.remove(["Frieren"], drop_files=True, client="local")
+    assert plan.size_bytes == 10
+    assert not (local_base / "Frieren").exists()
+
+
+def test_the_cli_takes_its_clients_root_before_an_endpoints():
+    from anirss_lib.cli.args import ParsedArgs
+    from anirss_lib.endpoints import Endpoint
+    from anirss_lib.main import _save_base_for, pin_client
+
+    cfg = config_mod.build_config({"qbittorrent": {"client": [
+        {"name": "seedbox", "url": SEEDBOX, "save_base": "/srv/anime"},
+        {"name": "local", "url": LOCAL}]}})
+    ep = Endpoint(name="nyaa", kind="nyaa", url="https://nyaa.si", save_base="/ep/anime")
+    pin_client(cfg, ["-Q"], "seedbox")
+    assert _save_base_for(ParsedArgs(), cfg, ep) == "/srv/anime"
+    cfg = config_mod.build_config({"qbittorrent": {"client": [
+        {"name": "seedbox", "url": SEEDBOX, "save_base": "/srv/anime"},
+        {"name": "local", "url": LOCAL}]}})
+    pin_client(cfg, ["-Q"], "local")
+    assert _save_base_for(ParsedArgs(), cfg, ep) == "/ep/anime"

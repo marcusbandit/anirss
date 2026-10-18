@@ -166,6 +166,18 @@ anirss -c local -Q               # the local one's subscriptions
 anirss -c seedbox -Rs Frieren    # remove from the seedbox
 ```
 
+A seedbox saves to its own disk, so give its block the paths as they are on that machine; a block without them uses `[downloads]`:
+
+```toml
+[[qbittorrent.client]]
+name = "seedbox"
+url = "http://192.0.2.10:8080"
+save_base = "/home/me/anime"       # on the seedbox; `~` is only allowed for a local client
+movie_path = "/home/me/movies"
+```
+
+anirss only reads or deletes files itself for a client on this machine (a local url, or `local_files = true` for a NAS mounted at the same path). On any other, `-Rn` is refused and `-Rns` has qBittorrent delete the files, so a remove on the seedbox never touches a folder of the same name here.
+
 Each client keeps its own session and saved password, so switching never logs the other one out: the first login to a client asks for its password (`qBittorrent password for local`) and offers to remember it. A config without `[[qbittorrent.client]]` blocks works exactly as before. The `-R` tab completion lists the subscriptions of whichever client last refreshed the cache (`-Sy`).
 
 ## Usage

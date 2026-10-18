@@ -163,6 +163,13 @@ any other `[qbittorrent]` key it leaves out (`username`, `tags`,
 default. A config with no blocks has one client, named `default`, built from
 `[qbittorrent]` itself. An invalid block raises `ConfigError` at construction.
 
+A block may set its own `save_base`, `movie_path` and `hidden_base`. These are
+paths on the machine that client runs on; a block that leaves one out uses
+`[downloads]`'s. A client's files count as on this machine when its url is
+local (`localhost`, `127.0.0.1`, `::1`), unless the block sets
+`local_files = true` or `false` (a NAS mounted at the same path, say). Only a
+local client's paths may start with `~`; anirss expands it.
+
 Every method that reaches qBittorrent takes `client=None` (the default client)
 or a client's name; an unknown name raises `NotFoundError`. Each client logs in
 on its own, with its own session, rejected-password cool-down and password: the
@@ -220,7 +227,7 @@ Managing:
 | Method | Returns | Notes |
 | --- | --- | --- |
 | `subscriptions(*, client=None)` | `list[RuleInfo]` | |
-| `remove(names, *, drop_torrents=False, drop_files=False, hidden=False, dry_run=False, client=None)` | `list[RemovePlan]` | Removes the feed and rule. `drop_torrents` also removes their torrents, `drop_files` also deletes files on disk (confined to the configured download roots). `dry_run` returns the plans and changes nothing. Unknown names raise `NotFoundError` before anything is removed. |
+| `remove(names, *, drop_torrents=False, drop_files=False, hidden=False, dry_run=False, client=None)` | `list[RemovePlan]` | Removes the feed and rule. `drop_torrents` also removes their torrents, `drop_files` also deletes files on disk (confined to the client's download roots). On a client whose files are not on this machine, anirss never touches the disk: `drop_files` needs `drop_torrents`, so qBittorrent deletes them, and the plan's size is the torrents' size as qBittorrent reports it. `drop_files` alone raises `ValidationError` there. `dry_run` returns the plans and changes nothing. Unknown names raise `NotFoundError` before anything is removed. |
 | `torrents(*, name=None, hashes=None, hidden=False, client=None)` | `list[dict]` | All torrents, or those saved under `<save_base>/<name>`, or by info-hash. |
 | `clients()` | `list[dict]` | Every client's resolved `[qbittorrent]` settings plus `name`, in priority order; the first is the default. |
 | `client(name=None)` | `dict` | One of those. `NotFoundError` for an unknown name. |

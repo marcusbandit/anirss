@@ -2,7 +2,9 @@
 QbtConfig a login takes, and picked by name."""
 
 import copy
+import os
 import re
+import urllib.parse
 from typing import cast
 
 from anirss_lib.config import AnirssConfig, QbtConfig
@@ -15,6 +17,56 @@ DEFAULT_CLIENT = "default"
 
 # The name ends up in the session and password file names.
 _NAME = re.compile(r"[A-Za-z0-9._-]+")
+
+# The download roots a block may set for itself. They are paths on the
+# machine that client runs on, which for a seedbox is not this one.
+PATH_KEYS = ("save_base", "movie_path", "hidden_base")
+
+
+def is_local_url(base_url: str) -> bool:
+    """True when base_url points at this machine."""
+    host = (urllib.parse.urlparse(base_url).hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+
+def local_files(client: QbtConfig) -> bool:
+    """Whether the client's downloads are on this machine's disk, so anirss
+    may size and delete them itself. `local_files` in the block says so
+    (a NAS mounted at the same path, say); otherwise a client at a local
+    address has them here and any other does not."""
+    value = client.get("local_files")
+    if isinstance(value, bool):
+        return value
+    return is_local_url(client["url"])
+
+
+def download_root(cfg: AnirssConfig, client: QbtConfig, key: str) -> str:
+    """The client's own save_base / movie_path / hidden_base, else the
+    [downloads] one."""
+    return str(client.get(key) or cfg["downloads"][key])
+
+
+def _settle_paths(client: QbtConfig, label: str) -> None:
+    """Check a client's local_files and own download roots. A local client's
+    `~` is expanded here; another's is refused, since nothing on that
+    machine would expand it."""
+    value = client.get("local_files")
+    if value is not None and not isinstance(value, bool):
+        raise ConfigError(f"{label}: `local_files` must be true or false")
+    here = local_files(client)
+    for key in PATH_KEYS:
+        if key not in client:
+            continue
+        path = client[key]
+        if not isinstance(path, str) or not path.strip():
+            raise ConfigError(f"{label}: `{key}` must be a path")
+        path = path.strip()
+        if path.startswith("~"):
+            if not here:
+                raise ConfigError(f"{label}: `{key}` is a path on that client's own "
+                                  f"machine; give it in full, `~` is not expanded there")
+            path = os.path.expanduser(path)
+        client[key] = path
 
 
 def qbt_clients(cfg: AnirssConfig) -> list[QbtConfig]:
@@ -55,8 +107,10 @@ def qbt_clients(cfg: AnirssConfig) -> list[QbtConfig]:
         tags = raw.get("tags")
         if tags is not None and not isinstance(tags, list):
             raise ConfigError(f"[[qbittorrent.client]] {name!r}: `tags` must be a list")
-        merged = {**copy.deepcopy(shared), **copy.deepcopy(raw), "name": name, "url": url}
-        out.append(cast(QbtConfig, merged))
+        merged = cast(QbtConfig, {**copy.deepcopy(shared), **copy.deepcopy(raw),
+                                  "name": name, "url": url})
+        _settle_paths(merged, f"[[qbittorrent.client]] {name!r}")
+        out.append(merged)
     return out
 
 

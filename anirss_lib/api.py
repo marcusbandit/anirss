@@ -47,7 +47,7 @@ from anirss_lib.qbt.actions import (
     SubscribeResult,
     validate_name,
 )
-from anirss_lib.qbt.clients import qbt_clients
+from anirss_lib.qbt.clients import download_root, local_files, qbt_clients
 from anirss_lib.qbt.session import QbtSession, _qbt_reachable, login_with_password
 from anirss_lib.refinement import RefineOutcome
 from anirss_lib.titles import show_name
@@ -439,9 +439,10 @@ class Anirss:
 
     # ---- actions -----------------------------------------------------------
 
-    def _save_base(self, hidden: bool) -> str:
-        d = self.config["downloads"]
-        return d["hidden_base"] if hidden else d["save_base"]
+    def _save_base(self, hidden: bool, client: str | None = None) -> str:
+        """The client's own root where its block sets one, else [downloads]'s."""
+        key = "hidden_base" if hidden else "save_base"
+        return download_root(self.config, self.client(client), key)
 
     def _tags(self, client: str | None = None) -> list[str]:
         return list(self.client(client).get("tags") or [])
@@ -473,7 +474,7 @@ class Anirss:
         name = self._name_for(name, items, query)
         spec = self.subscription_spec(query, items, endpoint)
         return self._with_qbt(lambda q: actions.subscribe_rule(
-            q, spec.feed_url, name, self._save_base(hidden),
+            q, spec.feed_url, name, self._save_base(hidden, client),
             endpoint_name=spec.endpoint_name,
             must_not_contain=spec.must_not_contain,
             must_contain=spec.must_contain, tags=self._tags(client)), client)
@@ -486,13 +487,13 @@ class Anirss:
             raise NotFoundError(f"no items returned by {url}")
         name = self._name_for(name, items, "anirss")
         return self._with_qbt(lambda q: actions.subscribe_rule(
-            q, url, name, self._save_base(hidden), tags=self._tags(client)), client)
+            q, url, name, self._save_base(hidden, client), tags=self._tags(client)), client)
 
     def download(self, links: list[str], *, name: str, hidden: bool = False,
                  client: str | None = None) -> AddResult:
         """Add magnet / http(s) .torrent links now, into save_base/<name>."""
         links = _check_links(links)
-        save_path = os.path.join(self._save_base(hidden), validate_name(name))
+        save_path = os.path.join(self._save_base(hidden, client), validate_name(name))
         return self._add_links(links, save_path, client)
 
     def download_items(self, items: list[Item], *, name: str | None = None,
@@ -507,7 +508,8 @@ class Anirss:
     def movie(self, link: str, *, client: str | None = None) -> AddResult:
         """Add one torrent straight into [downloads].movie_path (no subdir)."""
         links = _check_links([link])
-        return self._add_links(links, self.config["downloads"]["movie_path"], client)
+        movie_path = download_root(self.config, self.client(client), "movie_path")
+        return self._add_links(links, movie_path, client)
 
     def _add_links(self, links: list[str], save_path: str,
                    client: str | None = None) -> AddResult:
@@ -530,7 +532,7 @@ class Anirss:
         if any(c in '"\\' or ord(c) < 32 or ord(c) == 127 for c in file_name):
             raise ValidationError(f"invalid file_name {file_name!r}")
         name = validate_name(name or os.path.splitext(file_name)[0] or "anirss")
-        save_path = os.path.join(self._save_base(hidden), name)
+        save_path = os.path.join(self._save_base(hidden, client), name)
         return self._with_qbt(lambda q: actions.add_torrent_bytes(
             q, data, file_name, save_path, self._tags(client)), client)
 
@@ -550,19 +552,23 @@ class Anirss:
         names = list(dict.fromkeys(names))  # a repeat would fail half-way through
         if not names:
             raise ValidationError("no subscription names given")
-        d = self.config["downloads"]
+        c = self.client(client)
+        here = local_files(c)
+        roots = [download_root(self.config, c, "save_base"),
+                 download_root(self.config, c, "hidden_base")]
 
         def run(q: QbtSession) -> list[RemovePlan]:
             plans = actions.plan_remove(q, names, drop_torrents=drop_torrents,
                                         drop_files=drop_files,
-                                        save_base=self._save_base(hidden))
-            roots = [d["save_base"], d["hidden_base"]]
+                                        save_base=self._save_base(hidden, client),
+                                        local_files=here)
             if drop_files:
-                actions.check_confined(plans, roots)  # dry runs refuse too
+                # dry runs refuse too
+                actions.check_confined(plans, roots, local_files=here)
             if not dry_run:
                 actions.execute_remove(
                     q, plans, drop_torrents=drop_torrents, drop_files=drop_files,
-                    confine_to=roots)
+                    confine_to=roots, local_files=here)
             return plans
         return self._with_qbt(run, client)
 
@@ -570,7 +576,7 @@ class Anirss:
                  hidden: bool = False, client: str | None = None) -> list[dict]:
         """qBittorrent's torrents (state, progress, content_path, …), all of
         them or those of one subscription/download `name`, or by info-hash."""
-        save_path = (os.path.join(self._save_base(hidden), validate_name(name))
+        save_path = (os.path.join(self._save_base(hidden, client), validate_name(name))
                      if name else None)
         return self._with_qbt(lambda q: actions.list_torrents(
             q, save_path=save_path, hashes=hashes), client)

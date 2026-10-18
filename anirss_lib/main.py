@@ -35,7 +35,7 @@ from anirss_lib.nyaa import FetchError, fetch_rss
 from anirss_lib.qbt.actions import (
     do_download, do_movie, do_subscribe, do_upload_local_torrent,
 )
-from anirss_lib.qbt.clients import qbt_client, qbt_clients
+from anirss_lib.qbt.clients import download_root, local_files, qbt_client, qbt_clients
 from anirss_lib.qbt.feeds import maybe_refresh_feed_cache
 from anirss_lib.qbt.refresh import cmd_refresh_on_demand, settle
 from anirss_lib.qbt.session import apply_no_seed, login_with_password, login_with_retry
@@ -54,16 +54,24 @@ _pick_top_n = stats_mod.top_by_downloads
 def _save_base_for(parsed: "ParsedArgs", cfg: "AnirssConfig",
                    ep: Endpoint | None = None) -> str:
     """Pick the destination root: hidden_base when `h` modifier is set
-    (e.g. -Sh, -Th), otherwise the endpoint's own save_base, otherwise the
-    regular one."""
+    (e.g. -Sh, -Th), otherwise the client's own save_base, otherwise the
+    endpoint's, otherwise the regular one. A client's own comes first: it
+    is a path on that client's machine, and an endpoint's need not exist
+    there."""
+    client = cfg["qbittorrent"]
     if parsed.hidden:
-        return cfg["downloads"]["hidden_base"]
+        return download_root(cfg, client, "hidden_base")
+    if client.get("save_base"):
+        return client["save_base"]
     if ep is not None and ep.save_base:
         return ep.save_base
     return cfg["downloads"]["save_base"]
 
 
 def _movie_path_for(cfg: "AnirssConfig", ep: Endpoint | None = None) -> str:
+    client = cfg["qbittorrent"]
+    if client.get("movie_path"):
+        return client["movie_path"]
     if ep is not None and ep.movie_path:
         return ep.movie_path
     return cfg["downloads"]["movie_path"]
@@ -263,13 +271,15 @@ def _handle_op_flag(argv: list[str], cfg: AnirssConfig, parsed: ParsedArgs
             parsed.hidden = True
         return False, url
     if op == "R":
-        save_base = (cfg["downloads"]["hidden_base"] if "h" in mods
-                     else cfg["downloads"]["save_base"])
-        cmd_remove(cfg["qbittorrent"], args=rest,
+        client = cfg["qbittorrent"]
+        save_base = download_root(cfg, client, "hidden_base" if "h" in mods
+                                  else "save_base")
+        cmd_remove(client, args=rest,
                    drop_torrents=("s" in mods),
                    drop_files=("n" in mods),
                    noconfirm=parsed.noconfirm,
-                   save_base=save_base)
+                   save_base=save_base,
+                   local_files=local_files(client))
         return True, None
     if op == "T":
         if not rest:

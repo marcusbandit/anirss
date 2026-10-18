@@ -1579,7 +1579,7 @@ def test_torrents_filters_and_trims(make):
         {**full, "save_path": "/dl/Show", "extra": 1},
         {**full, "save_path": "/dl/Other"}])
     e = make(qbt)
-    e.ani._save_base = lambda hidden: "/dl"
+    e.ani._save_base = lambda hidden, client=None: "/dl"
     got = e.ani.torrents(name="Show")
     assert len(got) == 1 and set(got[0]) == set(actions.TORRENT_FIELDS)
     assert len(e.ani.torrents()) == 2

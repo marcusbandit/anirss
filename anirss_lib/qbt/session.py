@@ -19,7 +19,7 @@ from anirss_lib.ansi import C_BLD, C_CYN, C_GRN, C_OFF, C_RED, C_YEL
 from anirss_lib.config import PASS_PATH, QbtConfig, SID_PATH, STATE_DIR
 from anirss_lib.errors import AnirssError, QbtAuthError, QbtError
 from anirss_lib.logging import log
-from anirss_lib.qbt.clients import DEFAULT_CLIENT
+from anirss_lib.qbt.clients import DEFAULT_CLIENT, is_local_url
 
 
 def _build_multipart_body(boundary: str, fields: dict, file_field: str,
@@ -349,8 +349,7 @@ def _qbt_reachable(base_url: str, timeout: float = 3.0) -> bool:
 
 def _is_local_url(base_url: str) -> bool:
     """True when base_url points at this machine, so we could start qBittorrent."""
-    host = (urllib.parse.urlparse(base_url).hostname or "").lower()
-    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+    return is_local_url(base_url)
 
 
 def _qbt_start_command(qbt_cfg: QbtConfig) -> list[str] | None:

@@ -32,6 +32,10 @@ class QbtClientConfig(TypedDict, total=False):
     save_password: bool
     tags: list[str]
     start_command: str
+    save_base: str
+    movie_path: str
+    hidden_base: str
+    local_files: bool
 
 
 class QbtConfig(TypedDict):
@@ -49,6 +53,12 @@ class QbtConfig(TypedDict):
     client: NotRequired[list[QbtClientConfig]]
     # Set on a resolved client (qbt_client()); [qbittorrent] itself has none.
     name: NotRequired[str]
+    # A block's own download roots, paths on that client's machine, and
+    # whether those are on this one (see qbt/clients.py).
+    save_base: NotRequired[str]
+    movie_path: NotRequired[str]
+    hidden_base: NotRequired[str]
+    local_files: NotRequired[bool]
 
 
 class DownloadsConfig(TypedDict):
@@ -142,9 +152,14 @@ tags = ["Anime"]
 # block can override. The first block is the default client: `anirss -c <name>`
 # uses another for one run, and the API takes `client`. Each client keeps its
 # own session and saved password (qbt-<name>.sid / .pass in ~/.local/state/anirss).
+# A block may also set save_base / movie_path / hidden_base: paths on that
+# client's own machine (in full; `~` only for a local client). anirss only
+# deletes files itself for a client on this machine, or one with
+# local_files = true; on any other, files go with their torrents (-Rns).
 #[[qbittorrent.client]]
 #name = "seedbox"
 #url = "http://192.0.2.10:8080"
+#save_base = "/home/me/anime"
 #
 #[[qbittorrent.client]]
 #name = "local"
