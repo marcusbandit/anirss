@@ -77,6 +77,10 @@ def parse_op_flag(arg: str) -> tuple[str, set[str]] | None:
     return op, mods
 
 
+# Flags parse_cli_args reads a value after; that value is never a -c.
+_VALUE_FLAGS = frozenset({"--name", "--download", "-e", "--endpoint"})
+
+
 def take_client_flag(argv: list[str]) -> tuple[list[str], str | None]:
     """Pull `-c NAME` / `--client NAME` / `--client=NAME` out of argv wherever
     it sits. It picks the qBittorrent for the whole run, so it must come off
@@ -86,6 +90,15 @@ def take_client_flag(argv: list[str]) -> tuple[list[str], str | None]:
     i = 0
     while i < len(argv):
         a = argv[i]
+        if a == "--":
+            # Everything after `--` is the user's, never a flag of ours.
+            rest.extend(argv[i:])
+            break
+        if a in _VALUE_FLAGS and i + 1 < len(argv):
+            # `--name -c` names a show "-c"; it does not pick a client.
+            rest.extend(argv[i:i + 2])
+            i += 2
+            continue
         if a in ("-c", "--client"):
             i += 1
             if i >= len(argv):

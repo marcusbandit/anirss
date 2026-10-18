@@ -1,6 +1,7 @@
 """Config schema, defaults, loading, and migration."""
 
 import copy
+import hashlib
 import os
 import re
 import sys
@@ -373,8 +374,16 @@ def _env_overrides(cfg: AnirssConfig) -> None:
 def _env_client_name(url: str) -> str:
     """A client name for an address only the environment gives, safe as part
     of a file name: env-127.0.0.1_47321 for http://127.0.0.1:47321."""
-    host = urllib.parse.urlsplit(url).netloc.rsplit("@", 1)[-1] or "qbittorrent"
-    return "env-" + re.sub(r"[^A-Za-z0-9._-]", "_", host)
+    parts = urllib.parse.urlsplit(url)
+    host = parts.netloc.rsplit("@", 1)[-1] or "qbittorrent"
+    name = "env-" + re.sub(r"[^A-Za-z0-9._-]", "_", host)
+    # The host alone would give http://h:1/a, http://h:1/b and https://h:1
+    # one session file between them; any scheme or path past plain http at
+    # the root gets a short hash of the address too.
+    if parts.scheme.lower() != "http" or parts.path.strip("/"):
+        digest = hashlib.sha256(url.rstrip("/").encode()).hexdigest()[:8]
+        name += "-" + digest
+    return name
 
 
 def build_config(user_cfg: dict | None = None) -> AnirssConfig:

@@ -234,7 +234,9 @@ class Anirss:
         self._qbt_state[self._clients[0]["name"]].password = qbt_password
         self._autostart = autostart_qbt
         self._persist = persist_session
-        self._qbt_lock = threading.RLock()
+        # One lock per client: a slow or unreachable seedbox's login must not
+        # hold up a request for the local client.
+        self._qbt_locks = {c["name"]: threading.RLock() for c in self._clients}
 
     # ---- endpoints / search -------------------------------------------
 
@@ -372,7 +374,7 @@ class Anirss:
     def set_qbt_password(self, password: str | None, *, client: str | None = None) -> None:
         """Swap a client's credentials (clears a previous login failure)."""
         name = self.client(client)["name"]
-        with self._qbt_lock:
+        with self._qbt_locks[name]:
             self._qbt_state[name] = _QbtState(password=password)
 
     def qbt_status(self, client: str | None = None) -> dict:
@@ -380,7 +382,7 @@ class Anirss:
         c = self.client(client)
         state = self._qbt_state[c["name"]]
         url = c["url"]
-        return {"client": c["name"], "url": url,
+        return {"client": c["name"], "url": redact_url(url),
                 "reachable": _qbt_reachable(url, timeout=2.0),
                 "authenticated": state.session is not None,
                 "login_failed": state.failed_at is not None}
@@ -424,7 +426,7 @@ class Anirss:
         check-then-act). An expired session (401/403) is re-established once
         and retried."""
         c = self.client(client)
-        with self._qbt_lock:
+        with self._qbt_locks[c["name"]]:
             state = self._qbt_state[c["name"]]
             if state.session is None:
                 state.session = self._login(c)

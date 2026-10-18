@@ -12,6 +12,8 @@ local cache="${XDG_STATE_HOME:-$HOME/.local/state}/anirss/feeds.txt"
 local -a ops feeds
 
 ops=(
+    '-c:use one of the configured qBittorrent clients'
+    '--client:use one of the configured qBittorrent clients'
     '-e:start on a specific endpoint'
     '--endpoint:start on a specific endpoint'
     '-Q:list subscribed feeds'
@@ -40,15 +42,29 @@ ops=(
     '--help:help'
 )
 
-# First word after the command: offer the operation flags.
-if (( CURRENT == 2 )); then
+# After -c / --client: the configured client names.
+if [[ $words[CURRENT-1] == (-c|--client) ]]; then
+    local -a clients
+    clients=("${(@f)$(anirss --_clients 2>/dev/null)}")
+    _wanted clients expl 'qBittorrent client' compadd -a clients
+    return
+fi
+
+# `-c NAME` may come before the operation; the operation is the word after it.
+local -i op=2
+while [[ $words[op] == (-c|--client) ]]; do
+    (( op += 2 ))
+done
+
+# First word after the command (and any -c NAME): offer the operation flags.
+if (( CURRENT == op )); then
     _describe -t operations 'operation' ops
     return
 fi
 
 # After -R / -Rs / -Rn / -Rns / -R*h: complete feed names from the cache.
 # After -T / -Th: complete *.torrent files from the filesystem.
-case $words[2] in
+case $words[op] in
     (-R|-Rs|-Rn|-Rns|-Rh|-Rsh|-Rnh|-Rnsh)
         if [[ -f $cache ]]; then
             if [[ -n $(find $cache -mmin +1440 -print 2>/dev/null) ]]; then

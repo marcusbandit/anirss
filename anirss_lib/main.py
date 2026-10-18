@@ -24,7 +24,7 @@ from anirss_lib.config import (
 )
 from anirss_lib import endpoints as endpoints_mod
 from anirss_lib.endpoints import Endpoint, EndpointState, load_endpoints
-from anirss_lib.errors import AnirssError
+from anirss_lib.errors import AnirssError, ConfigError
 from anirss_lib.format import (
     category_chip, colorize_title, format_stats, show_titles,
     source_header_row,
@@ -35,7 +35,7 @@ from anirss_lib.nyaa import FetchError, fetch_rss
 from anirss_lib.qbt.actions import (
     do_download, do_movie, do_subscribe, do_upload_local_torrent,
 )
-from anirss_lib.qbt.clients import qbt_client
+from anirss_lib.qbt.clients import qbt_client, qbt_clients
 from anirss_lib.qbt.feeds import maybe_refresh_feed_cache
 from anirss_lib.qbt.refresh import cmd_refresh_on_demand, settle
 from anirss_lib.qbt.session import apply_no_seed, login_with_password, login_with_retry
@@ -185,7 +185,13 @@ def pin_client(cfg: AnirssConfig, argv: list[str], client: str | None) -> None:
     request, so it keeps them all unless -c names one."""
     if client is None and argv[:1] == ["--serve"]:
         return
-    cfg["qbittorrent"] = qbt_client(cfg, client)
+    pinned = qbt_client(cfg, client)
+    # ANIRSS_QBT_PASSWORD is the default client's password. Every CLI path
+    # (and a pinned --serve) reads it straight from the environment, so a run
+    # pinned to another client drops it rather than send it to that server.
+    if pinned["name"] != qbt_clients(cfg)[0]["name"]:
+        os.environ.pop("ANIRSS_QBT_PASSWORD", None)
+    cfg["qbittorrent"] = pinned
 
 
 # ---- meta-flag handler ----
@@ -684,6 +690,14 @@ def _main() -> None:
     cfg = load_config()
     responsive.set_display(cfg["display"])
 
+    # Hidden: the client names, one per line, for the shell completions.
+    if sys.argv[1:2] == ["--_clients"]:
+        try:
+            print("\n".join(c["name"] for c in qbt_clients(cfg)))
+        except ConfigError:
+            pass
+        return
+
     argv, client = take_client_flag(sys.argv[1:])
 
     # --_search-rss is special: stay quiet, no readline, no log init;
@@ -698,6 +712,11 @@ def _main() -> None:
         query = " ".join(rest).strip()
         if query:
             _print_search_rss_rows(query, active, endpoint_list)
+        return
+
+    # Help and version answer even when a client block is broken.
+    if argv[:1] in (["-h"], ["--help"], ["-V"], ["--version"]):
+        _handle_meta_flags(argv, cfg)
         return
 
     pin_client(cfg, argv, client)

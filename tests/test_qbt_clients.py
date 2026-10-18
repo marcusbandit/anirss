@@ -3,6 +3,7 @@ the CLI, and `client` through the library and the HTTP API."""
 
 import http.client
 import json
+import os
 import threading
 
 import pytest
@@ -74,10 +75,17 @@ def test_a_resolved_client_resolves_to_itself():
     ([{"name": "../up", "url": LOCAL}], "invalid name"),
     ([{"name": "local"}], "missing `url`"),
     ([{"name": "local", "url": LOCAL, "tags": "Anime"}], "must be a list"),
+    ([{"name": "env-localhost_8080", "url": LOCAL}], "kept for ANIRSS_QBT_URL"),
 ])
 def test_an_invalid_block_is_a_config_error(blocks, message):
     cfg = config_mod.build_config({"qbittorrent": {"client": blocks}})
     with pytest.raises(ConfigError, match=message):
+        qbt_clients(cfg)
+
+
+def test_a_name_without_blocks_is_checked_too():
+    cfg = config_mod.build_config({"qbittorrent": {"name": "../x"}})
+    with pytest.raises(ConfigError, match="invalid name"):
         qbt_clients(cfg)
 
 
@@ -109,6 +117,13 @@ def test_a_server_only_the_environment_names_keeps_its_own_session(tmp_path, mon
     # The same server the config names keeps the files it always had
     monkeypatch.setenv("ANIRSS_QBT_URL", "http://192.0.2.10:8080/")
     assert qbt_client(config_mod.load_config(path, bootstrap=False))["name"] == DEFAULT_CLIENT
+
+
+def test_each_environment_address_gets_a_name_of_its_own():
+    # The host alone would give these three one session file between them.
+    urls = ["https://localhost:8080", "http://localhost:8080/a", "http://localhost:8080/b"]
+    assert len({config_mod._env_client_name(u) for u in urls}) == 3
+    assert config_mod._env_client_name("http://localhost:8080/") == "env-localhost_8080"
 
 
 def test_the_default_config_still_parses_with_the_client_example():
@@ -159,6 +174,9 @@ def test_an_interactive_login_names_the_client_it_asks_for(monkeypatch):
     (["-Q", "--client", "seedbox"], ["-Q"], "seedbox"),
     (["--client=local", "Frieren", "1080p"], ["Frieren", "1080p"], "local"),
     (["-e", "nyaa", "Frieren"], ["-e", "nyaa", "Frieren"], None),
+    # A flag's value and anything after `--` are never read as -c
+    (["--name", "-c", "-S", "magnet:x"], ["--name", "-c", "-S", "magnet:x"], None),
+    (["-c", "local", "--", "-c", "x"], ["--", "-c", "x"], "local"),
 ])
 def test_the_client_flag_comes_off_wherever_it_sits(argv, rest, client):
     assert take_client_flag(argv) == (rest, client)
@@ -182,6 +200,21 @@ def test_a_run_uses_one_client_and_the_server_keeps_them_all():
     cfg = config_mod.build_config(TWO)
     pin_client(cfg, ["--serve"], "local")
     assert names(cfg) == ["local"]
+
+
+def test_a_run_pinned_to_another_client_drops_the_environment_password(monkeypatch):
+    # ANIRSS_QBT_PASSWORD is the default client's; the CLI reads it straight
+    # from the environment, so a run on another client must not see it.
+    from anirss_lib.main import pin_client
+
+    monkeypatch.setenv("ANIRSS_QBT_PASSWORD", "seedbox-pw")
+    pin_client(config_mod.build_config(TWO), ["-Q"], "seedbox")
+    assert os.environ.get("ANIRSS_QBT_PASSWORD") == "seedbox-pw"
+    pin_client(config_mod.build_config(TWO), ["-Q"], "local")
+    assert "ANIRSS_QBT_PASSWORD" not in os.environ
+    monkeypatch.setenv("ANIRSS_QBT_PASSWORD", "seedbox-pw")
+    pin_client(config_mod.build_config(TWO), ["--serve"], "local")
+    assert "ANIRSS_QBT_PASSWORD" not in os.environ
 
 
 def test_the_client_flag_needs_a_name():
@@ -250,6 +283,38 @@ def test_each_client_logs_in_once_and_keeps_its_session(two):
         ani.subscriptions(client="local")
         ani.subscriptions(client="seedbox")
     assert [name for name, _pw in logins.calls] == ["local", "seedbox"]
+
+
+def test_a_slow_client_does_not_hold_up_another(two, monkeypatch):
+    ani, logins = two()
+    entered, release = threading.Event(), threading.Event()
+    login = logins.__call__
+
+    def slow_seedbox(cfg, password, **kw):
+        if cfg["name"] == "seedbox":
+            entered.set()
+            release.wait(5)
+        return login(cfg, password, **kw)
+
+    monkeypatch.setattr("anirss_lib.api.login_with_password", slow_seedbox)
+    waiting = threading.Thread(target=ani.subscriptions, kwargs={"client": "seedbox"})
+    waiting.start()
+    try:
+        assert entered.wait(5)
+        done = threading.Thread(target=ani.subscriptions, kwargs={"client": "local"})
+        done.start()
+        done.join(2)
+        assert not done.is_alive() and logins.qbts[LOCAL].gets
+    finally:
+        release.set()
+        waiting.join(5)
+
+
+def test_the_status_masks_credentials_in_a_url(monkeypatch):
+    monkeypatch.setattr("anirss_lib.api._qbt_reachable", lambda *a, **kw: False)
+    ani = Anirss({"qbittorrent": {"client": [
+        {"name": "box", "url": "http://me:secret@192.0.2.10:8080"}]}})
+    assert ani.qbt_status()["url"] == "http://***@192.0.2.10:8080"
 
 
 def test_a_download_carries_its_clients_tags(two):

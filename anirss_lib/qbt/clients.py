@@ -13,6 +13,9 @@ from anirss_lib.errors import ConfigError, NotFoundError
 # were several, so an existing install stays logged in.
 DEFAULT_CLIENT = "default"
 
+# The name ends up in the session and password file names.
+_NAME = re.compile(r"[A-Za-z0-9._-]+")
+
 
 def qbt_clients(cfg: AnirssConfig) -> list[QbtConfig]:
     """Every configured qBittorrent in priority order (first = default): the
@@ -25,6 +28,9 @@ def qbt_clients(cfg: AnirssConfig) -> list[QbtConfig]:
     if not blocks:
         # A client qbt_client() already resolved carries its own name.
         name = str(shared.get("name") or DEFAULT_CLIENT)
+        if not _NAME.fullmatch(name):
+            raise ConfigError(f"[qbittorrent] name {name!r}: invalid name "
+                              f"(use only letters, digits, '.', '_', '-')")
         return [cast(QbtConfig, {**copy.deepcopy(shared), "name": name})]
     out: list[QbtConfig] = []
     seen: set[str] = set()
@@ -37,10 +43,12 @@ def qbt_clients(cfg: AnirssConfig) -> list[QbtConfig]:
         if name in seen:
             raise ConfigError(f"[[qbittorrent.client]] #{i}: duplicate name {name!r}")
         seen.add(name)
-        # The name ends up in the session and password file names.
-        if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+        if not _NAME.fullmatch(name):
             raise ConfigError(f"[[qbittorrent.client]] {name!r}: invalid name "
                               f"(use only letters, digits, '.', '_', '-')")
+        if name.startswith("env-"):
+            raise ConfigError(f"[[qbittorrent.client]] {name!r}: names starting "
+                              f"with 'env-' are kept for ANIRSS_QBT_URL")
         url = str(raw.get("url") or "").strip()
         if not url:
             raise ConfigError(f"[[qbittorrent.client]] {name!r}: missing `url`")
