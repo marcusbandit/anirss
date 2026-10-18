@@ -29,7 +29,7 @@ import anirss_lib
 from anirss_lib import endpoints as endpoints_mod
 from anirss_lib import refinement
 from anirss_lib import stats as stats_mod
-from anirss_lib.config import AnirssConfig, build_config, load_config
+from anirss_lib.config import AnirssConfig, QbtConfig, build_config, load_config
 from anirss_lib.endpoints import Endpoint, SubscriptionSpec, load_endpoints
 from anirss_lib.errors import (
     AnirssError,
@@ -47,16 +47,17 @@ from anirss_lib.qbt.actions import (
     SubscribeResult,
     validate_name,
 )
+from anirss_lib.qbt.clients import download_root, local_files, qbt_clients
 from anirss_lib.qbt.session import QbtSession, _qbt_reachable, login_with_password
 from anirss_lib.refinement import RefineOutcome
 from anirss_lib.titles import show_name
 from anirss_lib.types import Item
 
 __all__ = [
-    "AddResult", "Anirss", "AnirssError", "Endpoint", "Item", "RefineOutcome",
+    "FEATURES", "AddResult", "Anirss", "AnirssError", "Endpoint", "Item", "RefineOutcome",
     "RemovePlan", "RuleInfo", "SearchResult", "SubscribeResult",
-    "SubscriptionSpec", "endpoint_info", "item_from_dict", "redact_url",
-    "to_jsonable",
+    "SubscriptionSpec", "client_info", "endpoint_info", "item_from_dict",
+    "redact_url", "to_jsonable",
 ]
 
 T = TypeVar("T")
@@ -70,6 +71,17 @@ LINK_SCHEMES = ("magnet:", "http://", "https://")
 # to qB as URLs. AniBeam waits 60s for the whole call.
 FETCH_DEADLINE_S = 20.0
 LOGIN_COOLDOWN_S = 300
+
+# What this anirss can do, by name, so a frontend checks for what it relies on
+# instead of comparing version numbers. GET /health lists them. A name keeps
+# its meaning once listed; a new capability gets a new name.
+#   qbt_clients      several qBittorrents ([[qbittorrent.client]]), GET /clients,
+#                    and `client` on every route that reaches qBittorrent.
+#   qbt_env_session  an ANIRSS_QBT_URL the config does not name keeps its own
+#                    session and saved password, so pointing anirss at another
+#                    qBittorrent never sends it the configured one's. An anirss
+#                    without it fails at nothing; it only misbehaves quietly.
+FEATURES = ("qbt_clients", "qbt_env_session")
 
 
 class SearchResult(NamedTuple):
@@ -151,6 +163,21 @@ def endpoint_info(ep: Endpoint) -> dict:
             "client_side_refine": refinement.is_client_side(ep)}
 
 
+def client_info(client: QbtConfig) -> dict:
+    """Display-safe description of a qBittorrent client (credentials in its
+    URL masked)."""
+    return {"name": client.get("name", ""), "url": redact_url(client["url"])}
+
+
+@dataclasses.dataclass
+class _QbtState:
+    """One client's login: the password given for it, the live session, and
+    when a password was last rejected."""
+    password: str | None = None
+    session: QbtSession | None = None
+    failed_at: float | None = None
+
+
 def _check_link(link: object) -> str | None:
     """The link as qB should get it, or None when it can't be sent."""
     if (not isinstance(link, str) or not link.startswith(LINK_SCHEMES)
@@ -182,8 +209,10 @@ class Anirss:
     config        a full or partial config dict (config.toml shape); merged
                   over the defaults with no disk access. Omit to read
                   `config_path` (default ~/.config/anirss/config.toml).
-    qbt_password  qBittorrent WebUI password. Falls back to the
-                  ANIRSS_QBT_PASSWORD env var, then the password the CLI saved.
+    qbt_password  the default qBittorrent client's WebUI password. Falls back
+                  to the ANIRSS_QBT_PASSWORD env var, then the password the CLI
+                  saved. Any other client logs in with the password the CLI
+                  saved for it, or set_qbt_password(..., client=name).
     autostart_qbt start a local qBittorrent when it isn't running (CLI
                   behavior). Off by default: a library shouldn't spawn it.
     persist_session  write the qB session cookie to the shared SID cache the
@@ -200,18 +229,25 @@ class Anirss:
         else:
             self.config = load_config(config_path, bootstrap=False, strict=True)
         self._endpoints = load_endpoints(self.config)
-        self._password = qbt_password
+        self._clients = qbt_clients(self.config)
+        self._qbt_state = {c["name"]: _QbtState() for c in self._clients}
+        self._qbt_state[self._clients[0]["name"]].password = qbt_password
         self._autostart = autostart_qbt
         self._persist = persist_session
-        self._qbt: QbtSession | None = None
-        self._login_failed_at: float | None = None
-        self._qbt_lock = threading.RLock()
+        # One lock per client: a slow or unreachable seedbox's login must not
+        # hold up a request for the local client.
+        self._qbt_locks = {c["name"]: threading.RLock() for c in self._clients}
 
     # ---- endpoints / search -------------------------------------------
 
     @property
     def version(self) -> str:
         return anirss_lib.__version__
+
+    @property
+    def features(self) -> list[str]:
+        """The capabilities in FEATURES, for GET /health."""
+        return list(FEATURES)
 
     def endpoints(self) -> list[Endpoint]:
         """Configured search endpoints in priority order (first = default)."""
@@ -318,71 +354,98 @@ class Anirss:
         the feed carries no stats."""
         return stats_mod.top_by_downloads(items, n)
 
-    # ---- qBittorrent session ---------------------------------------------
+    # ---- qBittorrent clients and sessions ---------------------------------
 
-    def set_qbt_password(self, password: str | None) -> None:
-        """Swap credentials (clears a previous login failure)."""
-        with self._qbt_lock:
-            self._password = password
-            self._login_failed_at = None
-            self._qbt = None
+    def clients(self) -> list[QbtConfig]:
+        """Configured qBittorrent clients in priority order (first = default)."""
+        return list(self._clients)
 
-    def qbt_status(self) -> dict:
+    def client(self, name: str | None = None) -> QbtConfig:
+        """The client called `name`, or the default one. NotFoundError for an
+        unknown name."""
+        if not name:
+            return self._clients[0]
+        for c in self._clients:
+            if c["name"] == name:
+                return c
+        names = ", ".join(c["name"] for c in self._clients)
+        raise NotFoundError(f"unknown qBittorrent client {name!r} (configured: {names})")
+
+    def set_qbt_password(self, password: str | None, *, client: str | None = None) -> None:
+        """Swap a client's credentials (clears a previous login failure)."""
+        name = self.client(client)["name"]
+        with self._qbt_locks[name]:
+            self._qbt_state[name] = _QbtState(password=password)
+
+    def qbt_status(self, client: str | None = None) -> dict:
         """Reachability and session state, without attempting a login."""
-        url = self.config["qbittorrent"]["url"]
-        return {"url": url, "reachable": _qbt_reachable(url, timeout=2.0),
-                "authenticated": self._qbt is not None,
-                "login_failed": self._login_failed_at is not None}
+        c = self.client(client)
+        state = self._qbt_state[c["name"]]
+        url = c["url"]
+        return {"client": c["name"], "url": redact_url(url),
+                "reachable": _qbt_reachable(url, timeout=2.0),
+                "authenticated": state.session is not None,
+                "login_failed": state.failed_at is not None}
 
-    def _login(self) -> QbtSession:
-        password = (self._password if self._password is not None
-                    else os.environ.get("ANIRSS_QBT_PASSWORD", ""))
-        failed_at = self._login_failed_at
+    def _login(self, client: QbtConfig) -> QbtSession:
+        state = self._qbt_state[client["name"]]
+        password = state.password
+        if password is None:
+            # The environment names the default client's password only: each
+            # client is its own server, and one's password is no business of
+            # another's.
+            default = client["name"] == self._clients[0]["name"]
+            password = os.environ.get("ANIRSS_QBT_PASSWORD", "") if default else ""
+        failed_at = state.failed_at
         if failed_at is not None and time.monotonic() - failed_at < LOGIN_COOLDOWN_S:
             # A rejected password is not retried right away: qBittorrent bans
             # an IP after a handful of failures. A still-valid cached session
             # (e.g. the CLI logged in meanwhile) or set_qbt_password() gets us
             # back in sooner; otherwise one attempt per cool-down.
             from anirss_lib.qbt.session import _try_qbt_sid
-            sess = _try_qbt_sid(self.config["qbittorrent"]["url"], persist=False)
+            sess = _try_qbt_sid(client["url"], persist=False, client=client["name"])
             if sess is None:
                 raise QbtAuthError("qBittorrent rejected the password; retrying "
                                    f"after a {LOGIN_COOLDOWN_S // 60}-minute cool-down "
                                    "(or call set_qbt_password())", rejected=True)
-            self._login_failed_at = None
+            state.failed_at = None
             return sess
         try:
-            sess = login_with_password(self.config["qbittorrent"], password,
+            sess = login_with_password(client, password,
                                        autostart=self._autostart, notify=None,
                                        persist=self._persist)
         except QbtAuthError as e:
             if e.rejected:
-                self._login_failed_at = time.monotonic()
+                state.failed_at = time.monotonic()
             raise
-        self._login_failed_at = None
+        state.failed_at = None
         return sess
 
-    def _with_qbt(self, fn: Callable[[QbtSession], T]) -> T:
-        """Run fn(session) under the qB lock (rule naming is check-then-act).
-        An expired session (401/403) is re-established once and retried."""
-        with self._qbt_lock:
-            if self._qbt is None:
-                self._qbt = self._login()
+    def _with_qbt(self, fn: Callable[[QbtSession], T], client: str | None = None) -> T:
+        """Run fn(session) against a client under the qB lock (rule naming is
+        check-then-act). An expired session (401/403) is re-established once
+        and retried."""
+        c = self.client(client)
+        with self._qbt_locks[c["name"]]:
+            state = self._qbt_state[c["name"]]
+            if state.session is None:
+                state.session = self._login(c)
             try:
-                return fn(self._qbt)
+                return fn(state.session)
             except QbtAuthError:
-                self._qbt = None
-                self._qbt = self._login()
-                return fn(self._qbt)
+                state.session = None
+                state.session = self._login(c)
+                return fn(state.session)
 
     # ---- actions -----------------------------------------------------------
 
-    def _save_base(self, hidden: bool) -> str:
-        d = self.config["downloads"]
-        return d["hidden_base"] if hidden else d["save_base"]
+    def _save_base(self, hidden: bool, client: str | None = None) -> str:
+        """The client's own root where its block sets one, else [downloads]'s."""
+        key = "hidden_base" if hidden else "save_base"
+        return download_root(self.config, self.client(client), key)
 
-    def _tags(self) -> list[str]:
-        return list(self.config["qbittorrent"].get("tags") or [])
+    def _tags(self, client: str | None = None) -> list[str]:
+        return list(self.client(client).get("tags") or [])
 
     def _name_for(self, name: str | None, items: list[Item], fallback: str) -> str:
         if name is None or not name.strip():
@@ -396,7 +459,7 @@ class Anirss:
 
     def subscribe(self, query: str, *, endpoint: str | None = None,
                   items: list[Item] | None = None, name: str | None = None,
-                  hidden: bool = False) -> SubscribeResult:
+                  hidden: bool = False, client: str | None = None) -> SubscribeResult:
         """Subscribe to a search: a qB RSS feed + auto-download rule saving
         under save_base/<name> (hidden_base with hidden=True). `items` are
         the (refined) results the search returned; fetched when omitted.
@@ -411,43 +474,45 @@ class Anirss:
         name = self._name_for(name, items, query)
         spec = self.subscription_spec(query, items, endpoint)
         return self._with_qbt(lambda q: actions.subscribe_rule(
-            q, spec.feed_url, name, self._save_base(hidden),
+            q, spec.feed_url, name, self._save_base(hidden, client),
             endpoint_name=spec.endpoint_name,
             must_not_contain=spec.must_not_contain,
-            must_contain=spec.must_contain, tags=self._tags()))
+            must_contain=spec.must_contain, tags=self._tags(client)), client)
 
     def subscribe_feed(self, url: str, *, name: str | None = None,
-                       hidden: bool = False) -> SubscribeResult:
+                       hidden: bool = False, client: str | None = None) -> SubscribeResult:
         """Subscribe to a raw RSS feed URL as-is (`anirss -S <url>`)."""
         items = self.fetch_feed(url)
         if not items:
             raise NotFoundError(f"no items returned by {url}")
         name = self._name_for(name, items, "anirss")
         return self._with_qbt(lambda q: actions.subscribe_rule(
-            q, url, name, self._save_base(hidden), tags=self._tags()))
+            q, url, name, self._save_base(hidden, client), tags=self._tags(client)), client)
 
-    def download(self, links: list[str], *, name: str, hidden: bool = False
-                 ) -> AddResult:
+    def download(self, links: list[str], *, name: str, hidden: bool = False,
+                 client: str | None = None) -> AddResult:
         """Add magnet / http(s) .torrent links now, into save_base/<name>."""
         links = _check_links(links)
-        save_path = os.path.join(self._save_base(hidden), validate_name(name))
-        return self._add_links(links, save_path)
+        save_path = os.path.join(self._save_base(hidden, client), validate_name(name))
+        return self._add_links(links, save_path, client)
 
     def download_items(self, items: list[Item], *, name: str | None = None,
-                       hidden: bool = False) -> AddResult:
+                       hidden: bool = False, client: str | None = None) -> AddResult:
         """download() for search results; `name` defaults to the show name."""
         if not items:
             raise ValidationError("no items given")
         return self.download([it.link for it in items],
                              name=self._name_for(name, items, "anirss"),
-                             hidden=hidden)
+                             hidden=hidden, client=client)
 
-    def movie(self, link: str) -> AddResult:
+    def movie(self, link: str, *, client: str | None = None) -> AddResult:
         """Add one torrent straight into [downloads].movie_path (no subdir)."""
         links = _check_links([link])
-        return self._add_links(links, self.config["downloads"]["movie_path"])
+        movie_path = download_root(self.config, self.client(client), "movie_path")
+        return self._add_links(links, movie_path, client)
 
-    def _add_links(self, links: list[str], save_path: str) -> AddResult:
+    def _add_links(self, links: list[str], save_path: str,
+                   client: str | None = None) -> AddResult:
         # qB fetches every `urls=` link at once over one HTTP/2 connection,
         # and a host that caps concurrent streams (t.erai-raws.info allows
         # 8) refuses the rest. So anirss fetches the .torrent files itself,
@@ -457,28 +522,29 @@ class Anirss:
             [link for link in links if link.startswith(("http://", "https://"))],
             deadline_s=FETCH_DEADLINE_S)
         return self._with_qbt(lambda q: actions.add_links(
-            q, links, save_path, self._tags(), torrents=torrents))
+            q, links, save_path, self._tags(client), torrents=torrents), client)
 
     def upload_torrent(self, data: bytes, *, file_name: str = "file.torrent",
-                       name: str | None = None, hidden: bool = False) -> AddResult:
+                       name: str | None = None, hidden: bool = False,
+                       client: str | None = None) -> AddResult:
         """Add a .torrent from its bytes (works with a remote qBittorrent)."""
         file_name = os.path.basename(file_name or "") or "file.torrent"
         if any(c in '"\\' or ord(c) < 32 or ord(c) == 127 for c in file_name):
             raise ValidationError(f"invalid file_name {file_name!r}")
         name = validate_name(name or os.path.splitext(file_name)[0] or "anirss")
-        save_path = os.path.join(self._save_base(hidden), name)
+        save_path = os.path.join(self._save_base(hidden, client), name)
         return self._with_qbt(lambda q: actions.add_torrent_bytes(
-            q, data, file_name, save_path, self._tags()))
+            q, data, file_name, save_path, self._tags(client)), client)
 
     # ---- subscriptions / torrents --------------------------------------------
 
-    def subscriptions(self) -> list[RuleInfo]:
+    def subscriptions(self, *, client: str | None = None) -> list[RuleInfo]:
         """Every qB RSS rule with torrent/file counts (`anirss -Qj`)."""
-        return self._with_qbt(actions.list_subscriptions)
+        return self._with_qbt(actions.list_subscriptions, client)
 
     def remove(self, names: list[str], *, drop_torrents: bool = False,
                drop_files: bool = False, hidden: bool = False,
-               dry_run: bool = False) -> list[RemovePlan]:
+               dry_run: bool = False, client: str | None = None) -> list[RemovePlan]:
         """Remove subscriptions (feed + rule); optionally their torrents
         (drop_torrents) and files on disk (drop_files). Returns the plan;
         with dry_run nothing is changed. File deletion is confined to the
@@ -486,27 +552,31 @@ class Anirss:
         names = list(dict.fromkeys(names))  # a repeat would fail half-way through
         if not names:
             raise ValidationError("no subscription names given")
-        d = self.config["downloads"]
+        c = self.client(client)
+        here = local_files(c)
+        roots = [download_root(self.config, c, "save_base"),
+                 download_root(self.config, c, "hidden_base")]
 
         def run(q: QbtSession) -> list[RemovePlan]:
             plans = actions.plan_remove(q, names, drop_torrents=drop_torrents,
                                         drop_files=drop_files,
-                                        save_base=self._save_base(hidden))
-            roots = [d["save_base"], d["hidden_base"]]
+                                        save_base=self._save_base(hidden, client),
+                                        local_files=here)
             if drop_files:
-                actions.check_confined(plans, roots)  # dry runs refuse too
+                # dry runs refuse too
+                actions.check_confined(plans, roots, local_files=here)
             if not dry_run:
                 actions.execute_remove(
                     q, plans, drop_torrents=drop_torrents, drop_files=drop_files,
-                    confine_to=roots)
+                    confine_to=roots, local_files=here)
             return plans
-        return self._with_qbt(run)
+        return self._with_qbt(run, client)
 
     def torrents(self, *, name: str | None = None, hashes: list[str] | None = None,
-                 hidden: bool = False) -> list[dict]:
+                 hidden: bool = False, client: str | None = None) -> list[dict]:
         """qBittorrent's torrents (state, progress, content_path, …), all of
         them or those of one subscription/download `name`, or by info-hash."""
-        save_path = (os.path.join(self._save_base(hidden), validate_name(name))
+        save_path = (os.path.join(self._save_base(hidden, client), validate_name(name))
                      if name else None)
         return self._with_qbt(lambda q: actions.list_torrents(
-            q, save_path=save_path, hashes=hashes))
+            q, save_path=save_path, hashes=hashes), client)

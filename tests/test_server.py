@@ -166,6 +166,7 @@ def test_health_needs_no_token(env):
     status, body, _ = env.c.get("/health", token=None)
     assert status == 200
     assert body["ok"] is True and body["version"] == env.ani.version
+    assert body["features"] == ["qbt_clients", "qbt_env_session"]
 
 
 @pytest.mark.parametrize("token", [None, "wrong", "to", "tokk"])

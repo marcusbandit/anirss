@@ -123,7 +123,7 @@ Anirss(config=None, *, config_path=None, qbt_password=None,
 | --- | --- |
 | `config` | A full or partial config dict in `config.toml` shape (`{"qbittorrent": {"url": ...}, "downloads": {...}, "endpoint": [...]}`). Merged over the defaults, with no disk access. When given, `config_path` is ignored. |
 | `config_path` | Path to a config TOML file. Default `~/.config/anirss/config.toml`. Loaded strictly (an invalid config raises `ConfigError`) and never created if missing. |
-| `qbt_password` | qBittorrent WebUI password. If `None`, falls back to the `ANIRSS_QBT_PASSWORD` environment variable, then to the password the CLI saved (the mode-600 `qbt.pass` file under `~/.local/state/anirss/`) when the cached session is not enough. An empty password is valid for WebUI setups with auth bypass. |
+| `qbt_password` | The default qBittorrent client's WebUI password. If `None`, falls back to the `ANIRSS_QBT_PASSWORD` environment variable, then to the password the CLI saved (the mode-600 `qbt.pass` file under `~/.local/state/anirss/`) when the cached session is not enough. An empty password is valid for WebUI setups with auth bypass. Other clients: see [qBittorrent clients](#qbittorrent-clients). |
 | `autostart_qbt` | Start a local qBittorrent when it is not running, as the CLI does. Default `False`: a library should not spawn processes. |
 | `persist_session` | Write the qBittorrent session cookie to the SID cache the CLI shares. Default `False`: the cache is read but not written. |
 
@@ -137,6 +137,48 @@ qBittorrent bans an IP after a few failed logins. Fix the credentials and call
 `set_qbt_password(...)`. A still-valid cached session lets calls proceed in the
 meantime. An expired session (401/403 mid-call) is re-established once and the
 call retried.
+
+### qBittorrent clients
+
+A config can name several qBittorrents (a seedbox and the one on this machine,
+say) in `[[qbittorrent.client]]` blocks:
+
+```toml
+[qbittorrent]
+username = "me"        # every key here is the default a block can override
+
+[[qbittorrent.client]]
+name = "seedbox"
+url = "http://192.0.2.10:8080"
+
+[[qbittorrent.client]]
+name = "local"
+url = "http://localhost:8080"
+username = "admin"
+```
+
+Each block needs a unique `name` (letters, digits, `.`, `_`, `-`) and a `url`;
+any other `[qbittorrent]` key it leaves out (`username`, `tags`,
+`save_password`, ...) comes from `[qbittorrent]`. The first block is the
+default. A config with no blocks has one client, named `default`, built from
+`[qbittorrent]` itself. An invalid block raises `ConfigError` at construction.
+
+A block may set its own `save_base`, `movie_path` and `hidden_base`. These are
+paths on the machine that client runs on; a block that leaves one out uses
+`[downloads]`'s. A client's files count as on this machine when its url is
+local (`localhost`, `127.0.0.1`, `::1`), unless the block sets
+`local_files = true` or `false` (a NAS mounted at the same path, say). Only a
+local client's paths may start with `~`; anirss expands it.
+
+Every method that reaches qBittorrent takes `client=None` (the default client)
+or a client's name; an unknown name raises `NotFoundError`. Each client logs in
+on its own, with its own session, rejected-password cool-down and password: the
+`qbt_password` option and `ANIRSS_QBT_PASSWORD` belong to the default client
+only, and another client uses the password the CLI saved for it
+(`anirss -c <name>` once, interactively), its WebUI's auth bypass, or
+`set_qbt_password(password, client=name)`. The CLI keeps a named client's
+session and password in `qbt-<name>.sid` and `qbt-<name>.pass` beside the
+default client's `qbt.sid` and `qbt.pass`.
 
 ### Methods
 
@@ -170,22 +212,27 @@ Subscribing and downloading (these need qBittorrent):
 | Method | Returns | Notes |
 | --- | --- | --- |
 | `subscription_spec(query, items, endpoint=None)` | `SubscriptionSpec` | What `subscribe` would register. Does not touch qBittorrent (an Erai endpoint may cost one probe request). |
-| `subscribe(query, *, endpoint=None, items=None, name=None, hidden=False)` | `SubscribeResult` | `items` are fetched (no fallback) if omitted; `NotFoundError` if there are none. `name` defaults to the show name parsed from the first item. |
-| `subscribe_feed(url, *, name=None, hidden=False)` | `SubscribeResult` | Subscribe to a raw RSS URL as is. |
-| `download(links, *, name, hidden=False)` | `AddResult` | `magnet:` or http(s) links only. Saves under `<save_base>/<name>`. |
-| `download_items(items, *, name=None, hidden=False)` | `AddResult` | `download()` for search results. |
-| `movie(link)` | `AddResult` | One link into `[downloads].movie_path`, no subdirectory. |
-| `upload_torrent(data, *, file_name="file.torrent", name=None, hidden=False)` | `AddResult` | Raw `.torrent` bytes. Works with a remote qBittorrent. |
+| `subscribe(query, *, endpoint=None, items=None, name=None, hidden=False, client=None)` | `SubscribeResult` | `items` are fetched (no fallback) if omitted; `NotFoundError` if there are none. `name` defaults to the show name parsed from the first item. |
+| `subscribe_feed(url, *, name=None, hidden=False, client=None)` | `SubscribeResult` | Subscribe to a raw RSS URL as is. |
+| `download(links, *, name, hidden=False, client=None)` | `AddResult` | `magnet:` or http(s) links only. Saves under `<save_base>/<name>`. |
+| `download_items(items, *, name=None, hidden=False, client=None)` | `AddResult` | `download()` for search results. |
+| `movie(link, *, client=None)` | `AddResult` | One link into `[downloads].movie_path`, no subdirectory. |
+| `upload_torrent(data, *, file_name="file.torrent", name=None, hidden=False, client=None)` | `AddResult` | Raw `.torrent` bytes. Works with a remote qBittorrent. |
+
+`client` picks the qBittorrent (see [qBittorrent clients](#qbittorrent-clients)),
+and its `tags` are the ones stamped on what it adds.
 
 Managing:
 
 | Method | Returns | Notes |
 | --- | --- | --- |
-| `subscriptions()` | `list[RuleInfo]` | |
-| `remove(names, *, drop_torrents=False, drop_files=False, hidden=False, dry_run=False)` | `list[RemovePlan]` | Removes the feed and rule. `drop_torrents` also removes their torrents, `drop_files` also deletes files on disk (confined to the configured download roots). `dry_run` returns the plans and changes nothing. Unknown names raise `NotFoundError` before anything is removed. |
-| `torrents(*, name=None, hashes=None, hidden=False)` | `list[dict]` | All torrents, or those saved under `<save_base>/<name>`, or by info-hash. |
-| `qbt_status()` | `dict` | Never logs in. See [GET /qbt/status](#get-qbtstatus). |
-| `set_qbt_password(password)` | `None` | Swap credentials and clear a login failure. |
+| `subscriptions(*, client=None)` | `list[RuleInfo]` | |
+| `remove(names, *, drop_torrents=False, drop_files=False, hidden=False, dry_run=False, client=None)` | `list[RemovePlan]` | Removes the feed and rule. `drop_torrents` also removes their torrents, `drop_files` also deletes files on disk (confined to the client's download roots). On a client whose files are not on this machine, anirss never touches the disk: `drop_files` needs `drop_torrents`, so qBittorrent deletes them, and the plan's size is the torrents' size as qBittorrent reports it. `drop_files` alone raises `ValidationError` there. `dry_run` returns the plans and changes nothing. Unknown names raise `NotFoundError` before anything is removed. |
+| `torrents(*, name=None, hashes=None, hidden=False, client=None)` | `list[dict]` | All torrents, or those saved under `<save_base>/<name>`, or by info-hash. |
+| `clients()` | `list[dict]` | Every client's resolved `[qbittorrent]` settings plus `name`, in priority order; the first is the default. |
+| `client(name=None)` | `dict` | One of those. `NotFoundError` for an unknown name. |
+| `qbt_status(client=None)` | `dict` | Never logs in. See [GET /qbt/status](#get-qbtstatus). |
+| `set_qbt_password(password, *, client=None)` | `None` | Swap a client's credentials and clear its login failure. |
 
 `hidden=True` switches the base directory from `[downloads].save_base` to
 `[downloads].hidden_base`. `name` is validated; a name containing path
@@ -200,6 +247,9 @@ Helpers also exported from `anirss_lib.api`:
   `url` (redacted), `client_side_refine`. This is what `GET /endpoints` returns
   per endpoint. Note that `Anirss.endpoints()` returns the full `Endpoint`
   with its real URL, including any token.
+- `client_info(client)`: display-safe dict for one of `Anirss.clients()`:
+  `name` and `url` (credentials in the URL masked). This is what `GET /clients`
+  returns per client.
 - `redact_url(url)`: returns `url` with the values of query parameters named
   `token`, `apikey`, `api_key`, `key`, `passkey`, `auth`, or `secret`
   (case-insensitive, non-empty values only) replaced by `***`. A URL without a
@@ -264,7 +314,12 @@ password from `ANIRSS_QBT_PASSWORD` or the saved password file. Set the
 variable in the environment of the `anirss --serve` process.
 `ANIRSS_QBT_URL` and `ANIRSS_QBT_USERNAME` override `[qbittorrent] url` and
 `username` from the config file the same way, for a client that runs its own
-qBittorrent beside anirss. If qBittorrent
+qBittorrent beside anirss. `ANIRSS_QBT_URL` also drops any
+`[[qbittorrent.client]]` blocks, so the server has that one qBittorrent and no
+other. When that address is not the one `[qbittorrent] url` names, it keeps its
+session and saved password apart (`qbt-env-<host>_<port>.sid` and `.pass`), so
+anirss never sends the configured server's cookie or saved password to it.
+`anirss -c <name> --serve` likewise serves one client from the config. If qBittorrent
 needs a login and none is available, qBittorrent routes return `503
 qbt_auth_required`.
 
@@ -420,6 +475,7 @@ Summary:
 | --- | --- | --- |
 | GET | `/health` | Liveness and version (no auth). |
 | GET | `/qbt/status` | qBittorrent reachability and session state. |
+| GET | `/clients` | Configured qBittorrent clients. |
 | GET | `/endpoints` | Configured search endpoints. |
 | GET, POST | `/search` | Search. |
 | POST | `/feed` | Fetch any RSS URL. |
@@ -446,18 +502,35 @@ No auth. The Host guard still applies.
 curl $BASE/health
 ```
 ```json
-{"ok": true, "version": "0.4.2"}
+{"ok": true, "version": "0.5.0", "features": ["qbt_clients", "qbt_env_session"]}
 ```
+
+`features` names what this anirss can do. Check for the one you rely on rather
+than comparing `version`: a fork or a checkout can report any version, and an
+anirss from before a name existed simply does not list it (one older than 0.5.0
+has no `features` at all). A name keeps its meaning once listed.
+
+| Feature | Since | Meaning |
+| --- | --- | --- |
+| `qbt_clients` | 0.5.0 | Several qBittorrents in `[[qbittorrent.client]]` blocks, [GET /clients](#get-clients), and `client` on every route that reaches qBittorrent. |
+| `qbt_env_session` | 0.5.0 | An `ANIRSS_QBT_URL` that the config does not name keeps its own session and saved password, so an app that points anirss at another qBittorrent never sends it the configured one's. An anirss without it fails at nothing, it only misbehaves quietly, so an app that sets `ANIRSS_QBT_URL` should refuse one that does not list it. |
+
+Every route that reaches qBittorrent (`/qbt/status`, `/subscriptions` and
+`/subscriptions/remove`, `DELETE /subscriptions/{name}`, `/downloads`, `/movie`,
+`/torrents`, `/torrents/upload`) takes an optional `client`: a query parameter
+on GET, DELETE and `/torrents/upload`, a body field on the others. Omitted, it
+is the default client. An unknown name is `404 not_found`.
 
 #### GET /qbt/status
 
 Checks reachability (2 second timeout) without attempting a login.
+`?client=<name>` asks about a client other than the default.
 
 ```
 curl -H "Authorization: Bearer $TOKEN" $BASE/qbt/status
 ```
 ```json
-{"url": "http://localhost:8080", "reachable": true,
+{"client": "default", "url": "http://localhost:8080", "reachable": true,
  "authenticated": false, "login_failed": false}
 ```
 
@@ -466,6 +539,22 @@ is true after qBittorrent rejected the password. To stay clear of
 qBittorrent's IP ban, a rejected password is retried at most once per
 5-minute cool-down (a still-valid cached session from the CLI is picked up
 sooner). An unreachable qBittorrent never trips the cool-down.
+
+#### GET /clients
+
+```
+curl -H "Authorization: Bearer $TOKEN" $BASE/clients
+```
+```json
+{"clients": [
+  {"name": "seedbox", "url": "http://192.0.2.10:8080"},
+  {"name": "local", "url": "http://localhost:8080"}
+]}
+```
+
+Priority order; the first is the default. A config without
+`[[qbittorrent.client]]` blocks has one, named `default`. Credentials in a URL
+(`http://user:pass@host`) are masked.
 
 #### GET /endpoints
 

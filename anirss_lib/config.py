@@ -1,10 +1,12 @@
 """Config schema, defaults, loading, and migration."""
 
 import copy
+import hashlib
 import os
 import re
 import sys
 import tomllib
+import urllib.parse
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
@@ -21,6 +23,21 @@ FEEDS_CACHE_PATH = STATE_DIR / "feeds.txt"
 FEED_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 
+class QbtClientConfig(TypedDict, total=False):
+    """One [[qbittorrent.client]] block. Keys left out come from [qbittorrent]."""
+    name: str
+    url: str
+    username: str
+    login_retries: int
+    save_password: bool
+    tags: list[str]
+    start_command: str
+    save_base: str
+    movie_path: str
+    hidden_base: str
+    local_files: bool
+
+
 class QbtConfig(TypedDict):
     url: str
     username: str
@@ -32,6 +49,16 @@ class QbtConfig(TypedDict):
     # Optional: when unset, anirss auto-detects qbittorrent-nox / qbittorrent
     # on PATH. Only used for a local url (localhost / 127.0.0.1 / ::1).
     start_command: NotRequired[str]
+    # Several qBittorrents, by name (see qbt/clients.py). Absent = one client.
+    client: NotRequired[list[QbtClientConfig]]
+    # Set on a resolved client (qbt_client()); [qbittorrent] itself has none.
+    name: NotRequired[str]
+    # A block's own download roots, paths on that client's machine, and
+    # whether those are on this one (see qbt/clients.py).
+    save_base: NotRequired[str]
+    movie_path: NotRequired[str]
+    hidden_base: NotRequired[str]
+    local_files: NotRequired[bool]
 
 
 class DownloadsConfig(TypedDict):
@@ -119,6 +146,24 @@ tags = ["Anime"]
 # start it for you. By default it auto-detects qbittorrent-nox (preferred) or
 # qbittorrent on PATH. Uncomment to force a specific launch command instead.
 #start_command = "qbittorrent"
+# More than one qBittorrent (a seedbox and the one on this machine, say)? Name
+# each in a [[qbittorrent.client]] block with its own url; the url above is
+# then unused, and every other key above (username, tags, ...) is the default a
+# block can override. The first block is the default client: `anirss -c <name>`
+# uses another for one run, and the API takes `client`. Each client keeps its
+# own session and saved password (qbt-<name>.sid / .pass in ~/.local/state/anirss).
+# A block may also set save_base / movie_path / hidden_base: paths on that
+# client's own machine (in full; `~` only for a local client). anirss only
+# deletes files itself for a client on this machine, or one with
+# local_files = true; on any other, files go with their torrents (-Rns).
+#[[qbittorrent.client]]
+#name = "seedbox"
+#url = "http://192.0.2.10:8080"
+#save_base = "/home/me/anime"
+#
+#[[qbittorrent.client]]
+#name = "local"
+#url = "http://localhost:8080"
 
 [downloads]
 # Subscriptions and bulk downloads create a per-name subdirectory under this.
@@ -323,10 +368,37 @@ QBT_ENV = (("url", "ANIRSS_QBT_URL"), ("username", "ANIRSS_QBT_USERNAME"))
 
 
 def _env_overrides(cfg: AnirssConfig) -> None:
+    configured = str(cfg["qbittorrent"].get("url") or "").rstrip("/")
     for key, name in QBT_ENV:
         value = os.environ.get(name, "").strip()
         if value:
             cfg["qbittorrent"][key] = value
+    url = os.environ.get("ANIRSS_QBT_URL", "").strip()
+    if not url:
+        return
+    # The app names the one client it wants, so the user's own list of
+    # [[qbittorrent.client]] blocks would only let a caller reach past it.
+    cfg["qbittorrent"].pop("client", None)
+    # A server the config does not name is not the one the saved session and
+    # password (qbt.sid, qbt.pass) belong to: it gets files of its own, so its
+    # first login never sends another server's cookie or password.
+    if url.rstrip("/") != configured:
+        cfg["qbittorrent"]["name"] = _env_client_name(url)
+
+
+def _env_client_name(url: str) -> str:
+    """A client name for an address only the environment gives, safe as part
+    of a file name: env-127.0.0.1_47321 for http://127.0.0.1:47321."""
+    parts = urllib.parse.urlsplit(url)
+    host = parts.netloc.rsplit("@", 1)[-1] or "qbittorrent"
+    name = "env-" + re.sub(r"[^A-Za-z0-9._-]", "_", host)
+    # The host alone would give http://h:1/a, http://h:1/b and https://h:1
+    # one session file between them; any scheme or path past plain http at
+    # the root gets a short hash of the address too.
+    if parts.scheme.lower() != "http" or parts.path.strip("/"):
+        digest = hashlib.sha256(url.rstrip("/").encode()).hexdigest()[:8]
+        name += "-" + digest
+    return name
 
 
 def build_config(user_cfg: dict | None = None) -> AnirssConfig:

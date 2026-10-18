@@ -1,10 +1,10 @@
 # anirss
 
-A small CLI that searches [nyaa.si](https://nyaa.si) and hands the result to [qBittorrent](https://www.qbittorrent.org/) — either as a recurring RSS rule, a one-shot bulk download, or a single movie.
+A small CLI that searches [nyaa.si](https://nyaa.si) and hands the result to [qBittorrent](https://www.qbittorrent.org/) - either as a recurring RSS rule, a one-shot bulk download, or a single movie.
 
 Built around an interactive [fzf](https://github.com/junegunn/fzf) picker that lets you narrow a noisy result set into something you'd actually want to subscribe to.
 
-> Built with UNIX in mind — Linux and macOS. Windows users: WSL.
+> Built with UNIX in mind - Linux and macOS. Windows users: WSL.
 
 ## Install
 
@@ -17,7 +17,7 @@ yay -S anirss          # stable release
 yay -S anirss-git      # tracks main
 ```
 
-(Or `paru -S …` — any AUR helper works.)
+(Or `paru -S …` - any AUR helper works.)
 
 ### macOS / Linux (Homebrew)
 
@@ -40,7 +40,7 @@ cd anirss
 ./install.sh           # installs to ~/.local/bin
 ```
 
-`./install.sh` is idempotent — re-run it any time to pull, refresh the binary, and append any new default config sections. (No separate update script.)
+`./install.sh` is idempotent - re-run it any time to pull, refresh the binary, and append any new default config sections. (No separate update script.)
 
 After the first install, edit `~/.config/anirss/config.toml` to point at your qBittorrent WebUI.
 
@@ -69,8 +69,8 @@ filter = "0"
 # titles, and subscribing registers the show's own /anime-list/<slug>/feed/
 # in qBittorrent (validated with one request; falls back to this search URL)
 # with the query enforced via the rule's mustContain. Quality tokens (1080p,
-# WEB-DL, AVC, …) are never sent to the search — Erai's `s=` only matches
-# post text and would return nothing — they filter the results client-side
+# WEB-DL, AVC, …) are never sent to the search - Erai's `s=` only matches
+# post text and would return nothing - they filter the results client-side
 # using the feed's erai:resolution/infomkv/linktype metadata:
 #[[endpoint]]
 #name = "erai"
@@ -139,6 +139,47 @@ tags = ["Anime", "anirss"]
 
 Set `tags = []` to tag nothing. Tagging RSS rules needs qBittorrent 4.6 or newer; on older builds the rules still work, just untagged.
 
+## Several qBittorrents
+
+One qBittorrent is the usual setup: `[qbittorrent] url` says where it is. To use more than one, a seedbox and the qbittorrent-nox on this machine say, name each in a `[[qbittorrent.client]]` block:
+
+```toml
+[qbittorrent]
+username = "me"   # the default for every block; so is any other key here
+
+[[qbittorrent.client]]
+name = "seedbox"
+url = "http://192.0.2.10:8080"
+
+[[qbittorrent.client]]
+name = "local"
+url = "http://localhost:8080"
+username = "admin"
+tags = ["Anime", "local"]
+```
+
+The first block is the default. `-c <name>` (also `--client <name>` or `--client=<name>`) uses another one for that run, with every other flag:
+
+```bash
+anirss -c local Frieren 1080p    # search, then subscribe or download on the local one
+anirss -c local -Q               # the local one's subscriptions
+anirss -c seedbox -Rs Frieren    # remove from the seedbox
+```
+
+A seedbox saves to its own disk, so give its block the paths as they are on that machine; a block without them uses `[downloads]`:
+
+```toml
+[[qbittorrent.client]]
+name = "seedbox"
+url = "http://192.0.2.10:8080"
+save_base = "/home/me/anime"       # on the seedbox; `~` is only allowed for a local client
+movie_path = "/home/me/movies"
+```
+
+anirss only reads or deletes files itself for a client on this machine (a local url, or `local_files = true` for a NAS mounted at the same path). On any other, `-Rn` is refused and `-Rns` has qBittorrent delete the files, so a remove on the seedbox never touches a folder of the same name here.
+
+Each client keeps its own session and saved password, so switching never logs the other one out: the first login to a client asks for its password (`qBittorrent password for local`) and offers to remember it. A config without `[[qbittorrent.client]]` blocks works exactly as before. The `-R` tab completion lists the subscriptions of whichever client last refreshed the cache (`-Sy`).
+
 ## Usage
 
 ```text
@@ -192,7 +233,7 @@ echo "$pw" | anirss --password-stdin --subscribe Frieren
 ANIRSS_QBT_PASSWORD=... anirss --subscribe -S "https://nyaa.si/?page=rss&q=Frieren"
 ```
 
-`--subscribe`, `--download-all`, `--download N`, and `--movie` are mutually exclusive. Any one of them flips `anirss` into non-interactive mode: no fzf pickers, no `Name:` prompt (use `--name`, or the name is derived from the top result), and no password retry loop. Use the cached SID, the `ANIRSS_QBT_PASSWORD` env var, or one line read from stdin via `--password-stdin`. A `--password PW` CLI flag is intentionally not provided — `ps aux` and shell history both leak it.
+`--subscribe`, `--download-all`, `--download N`, and `--movie` are mutually exclusive. Any one of them flips `anirss` into non-interactive mode: no fzf pickers, no `Name:` prompt (use `--name`, or the name is derived from the top result), and no password retry loop. Use the cached SID, the `ANIRSS_QBT_PASSWORD` env var, or one line read from stdin via `--password-stdin`. A `--password PW` CLI flag is intentionally not provided - `ps aux` and shell history both leak it.
 
 ### Tab completion
 
@@ -200,7 +241,7 @@ Both packages (Brew, AUR) install a `zsh` completion at `…/zsh/site-functions/
 
 ### Note: bare-URL behavior changed in v0.2.0
 
-In v0.1.0, `anirss <nyaa-rss-url>` subscribed to the URL directly. In v0.2.0, it instead extracts the `q=` parameter and runs it as a fresh search — useful for "share a link, repeat the search" workflows. To subscribe explicitly, use `anirss -S <url>`. Pasting a non-nyaa URL will print an error pointing you at `-S`.
+In v0.1.0, `anirss <nyaa-rss-url>` subscribed to the URL directly. In v0.2.0, it instead extracts the `q=` parameter and runs it as a fresh search - useful for "share a link, repeat the search" workflows. To subscribe explicitly, use `anirss -S <url>`. Pasting a non-nyaa URL will print an error pointing you at `-S`.
 
 ## Using anirss as a backend
 

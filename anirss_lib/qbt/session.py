@@ -13,11 +13,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 
 from anirss_lib.ansi import C_BLD, C_CYN, C_GRN, C_OFF, C_RED, C_YEL
 from anirss_lib.config import PASS_PATH, QbtConfig, SID_PATH, STATE_DIR
 from anirss_lib.errors import AnirssError, QbtAuthError, QbtError
 from anirss_lib.logging import log
+from anirss_lib.qbt.clients import DEFAULT_CLIENT, is_local_url
 
 
 def _build_multipart_body(boundary: str, fields: dict, file_field: str,
@@ -139,6 +141,15 @@ class QbtSession:
 
 # -------- SID persistence --------
 
+def _client_file(base: Path, client: str) -> Path:
+    """Where `client`'s session or saved password lives. The default client
+    keeps the names from before there were several (qbt.sid); a named one gets
+    its own beside them (qbt-seedbox.sid), so using one never logs another out."""
+    if not client or client == DEFAULT_CLIENT:
+        return base
+    return base.with_name(f"{base.stem}-{client}{base.suffix}")
+
+
 def _make_qbt_opener(base_url: str
                      ) -> tuple[urllib.request.OpenerDirector, http.cookiejar.CookieJar]:
     jar = http.cookiejar.CookieJar()
@@ -152,8 +163,9 @@ def _is_sid_cookie_name(name: str) -> bool:
     return name == "SID" or name.startswith("QBT_SID_")
 
 
-def _save_sid(jar: http.cookiejar.CookieJar) -> None:
-    """Extract the session cookie from `jar` and write `name\\tvalue` to SID_PATH (mode 600)."""
+def _save_sid(jar: http.cookiejar.CookieJar, client: str = "") -> None:
+    """Extract the session cookie from `jar` and write `name\\tvalue` to the
+    client's SID file (mode 600)."""
     pair: tuple[str, str] | None = None
     for cookie in jar:
         if _is_sid_cookie_name(cookie.name):
@@ -161,23 +173,24 @@ def _save_sid(jar: http.cookiejar.CookieJar) -> None:
             break
     if pair is None:
         return
+    path = _client_file(SID_PATH, client)
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         try:
             STATE_DIR.chmod(0o700)
         except OSError:
             pass
-        SID_PATH.write_text(f"{pair[0]}\t{pair[1]}")
-        SID_PATH.chmod(0o600)
-        log("INFO", f"saved SID ({pair[0]}) to {SID_PATH}")
+        path.write_text(f"{pair[0]}\t{pair[1]}")
+        path.chmod(0o600)
+        log("INFO", f"saved SID ({pair[0]}) to {path}")
     except OSError as e:
-        log("WARN", f"couldn't save SID to {SID_PATH}: {e}")
+        log("WARN", f"couldn't save SID to {path}: {e}")
 
 
-def _load_sid() -> tuple[str, str] | None:
+def _load_sid(client: str = "") -> tuple[str, str] | None:
     """Return (cookie_name, value) or None. Legacy format (bare value) is read as ('SID', value)."""
     try:
-        raw = SID_PATH.read_text().strip()
+        raw = _client_file(SID_PATH, client).read_text().strip()
     except OSError:
         return None
     if not raw:
@@ -188,10 +201,11 @@ def _load_sid() -> tuple[str, str] | None:
     return ("SID", raw)
 
 
-def _drop_sid() -> None:
+def _drop_sid(client: str = "") -> None:
+    path = _client_file(SID_PATH, client)
     try:
-        SID_PATH.unlink()
-        log("INFO", f"dropped stale SID at {SID_PATH}")
+        path.unlink()
+        log("INFO", f"dropped stale SID at {path}")
     except OSError:
         pass
 
@@ -201,42 +215,44 @@ def _drop_sid() -> None:
 # a 700 state dir). A valid SID is already full WebUI access, so the password
 # sits at the trust level the cache already assumes.
 
-def _save_password(password: str) -> bool:
-    """Write `password` to PASS_PATH (mode 600). Returns True on success."""
+def _save_password(password: str, client: str = "") -> bool:
+    """Write `password` to the client's password file (mode 600). Returns True on success."""
+    path = _client_file(PASS_PATH, client)
     try:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         try:
             STATE_DIR.chmod(0o700)
         except OSError:
             pass
-        PASS_PATH.write_text(password)
-        PASS_PATH.chmod(0o600)
-        log("INFO", f"saved qBittorrent password to {PASS_PATH}")
+        path.write_text(password)
+        path.chmod(0o600)
+        log("INFO", f"saved qBittorrent password to {path}")
         return True
     except OSError as e:
-        log("WARN", f"couldn't save password to {PASS_PATH}: {e}")
+        log("WARN", f"couldn't save password to {path}: {e}")
         return False
 
 
-def _load_password() -> str | None:
+def _load_password(client: str = "") -> str | None:
     """Return the saved password, or None if there isn't one. Tolerates a
     trailing newline so `echo pw > qbt.pass` also works."""
     try:
-        raw = PASS_PATH.read_text()
+        raw = _client_file(PASS_PATH, client).read_text()
     except OSError:
         return None
     return raw.rstrip("\n") or None
 
 
-def _drop_password() -> None:
+def _drop_password(client: str = "") -> None:
+    path = _client_file(PASS_PATH, client)
     try:
-        PASS_PATH.unlink()
-        log("INFO", f"dropped saved password at {PASS_PATH}")
+        path.unlink()
+        log("INFO", f"dropped saved password at {path}")
     except OSError:
         pass
 
 
-def _offer_to_save_password(password: str) -> None:
+def _offer_to_save_password(password: str, client: str = "") -> None:
     """After a manual login, ask whether to remember the password. Only reached
     when nothing usable was saved, so a 'yes' here is always a fresh save."""
     try:
@@ -245,7 +261,7 @@ def _offer_to_save_password(password: str) -> None:
         return
     if answer not in ("y", "yes"):
         return
-    if _save_password(password):
+    if _save_password(password, client):
         print(f"{C_GRN}saved.{C_OFF} Future logins reuse it until it stops working.")
     else:
         print(f"{C_YEL}couldn't save the password. Check the log; you'll be asked again next time{C_OFF}")
@@ -289,10 +305,11 @@ def _make_sid_cookie(host: str, name: str, value: str, *, https: bool
     )
 
 
-def _try_qbt_sid(base_url: str, *, persist: bool = True) -> QbtSession | None:
-    """Resume a qBittorrent session from the cached SID. None if no SID or
-    it's dead (a dead one is deleted unless persist=False)."""
-    loaded = _load_sid()
+def _try_qbt_sid(base_url: str, *, persist: bool = True,
+                 client: str = "") -> QbtSession | None:
+    """Resume a qBittorrent session from the client's cached SID. None if no SID
+    or it's dead (a dead one is deleted unless persist=False)."""
+    loaded = _load_sid(client)
     if loaded is None:
         return None
     name, value = loaded
@@ -304,7 +321,7 @@ def _try_qbt_sid(base_url: str, *, persist: bool = True) -> QbtSession | None:
         log("INFO", "resumed qBittorrent session via cached SID")
         return sess
     if persist:
-        _drop_sid()
+        _drop_sid(client)
     return None
 
 
@@ -332,8 +349,7 @@ def _qbt_reachable(base_url: str, timeout: float = 3.0) -> bool:
 
 def _is_local_url(base_url: str) -> bool:
     """True when base_url points at this machine, so we could start qBittorrent."""
-    host = (urllib.parse.urlparse(base_url).hostname or "").lower()
-    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+    return is_local_url(base_url)
 
 
 def _qbt_start_command(qbt_cfg: QbtConfig) -> list[str] | None:
@@ -420,9 +436,10 @@ def _ensure_qbt_reachable(qbt_cfg: QbtConfig, *, autostart: bool = True,
 # -------- login flow --------
 
 def qbt_login(base_url: str, username: str, password: str, *,
-              persist: bool = True) -> tuple[QbtSession | None, str | None]:
+              persist: bool = True, client: str = ""
+              ) -> tuple[QbtSession | None, str | None]:
     """(session, None) on success, (None, error) otherwise. `persist=False`
-    leaves the shared SID cache file alone."""
+    leaves the client's shared SID cache file alone."""
     opener, jar = _make_qbt_opener(base_url)
     data = urllib.parse.urlencode({"username": username, "password": password}).encode()
     req = urllib.request.Request(f"{base_url}/api/v2/auth/login", data=data)
@@ -454,7 +471,7 @@ def qbt_login(base_url: str, username: str, password: str, *,
     jar.set_cookie(_make_sid_cookie(host, sid_name, sid_value,
                                     https=base_url.startswith("https://")))
     if persist:
-        _save_sid(jar)
+        _save_sid(jar, client)
     return QbtSession(opener, base_url), None
 
 
@@ -470,15 +487,18 @@ def login_with_retry(qbt_cfg: QbtConfig) -> QbtSession:
     username = qbt_cfg["username"]
     retries = int(qbt_cfg["login_retries"])
     use_saved = qbt_cfg["save_password"]
+    client = qbt_cfg.get("name", "")
+    # Which of several clients is asking, so a prompt is never ambiguous.
+    whose = f" for {client}" if client and client != DEFAULT_CLIENT else ""
     _ensure_qbt_reachable(qbt_cfg)
-    sess = _try_qbt_sid(base_url)
+    sess = _try_qbt_sid(base_url, client=client)
     if sess is not None:
         return sess
 
     if use_saved:
-        saved = _load_password()
+        saved = _load_password(client)
         if saved:
-            qbt, err = qbt_login(base_url, username, saved)
+            qbt, err = qbt_login(base_url, username, saved, client=client)
             if qbt is not None:
                 log("INFO", "logged in with saved password")
                 return qbt
@@ -488,23 +508,23 @@ def login_with_retry(qbt_cfg: QbtConfig) -> QbtSession:
             if not _qbt_reachable(base_url):
                 raise QbtError(f"can't reach qBittorrent at {base_url}. It went away "
                                f"mid-login. Left the saved password in place.")
-            print(f"{C_YEL}saved qBittorrent password was rejected "
+            print(f"{C_YEL}saved qBittorrent password{whose} was rejected "
                   f"(did it change on the server?). Removing it{C_OFF}")
             log("WARN", f"saved password rejected: {err}")
-            _drop_password()
+            _drop_password(client)
 
     for attempt in range(1, retries + 1):
         try:
-            password = getpass.getpass(f"qBittorrent password ({attempt}/{retries}): ")
+            password = getpass.getpass(f"qBittorrent password{whose} ({attempt}/{retries}): ")
         except (EOFError, KeyboardInterrupt):
             raise AnirssError("cancelled")
         if not password:
             print(f"{C_YEL}empty, try again{C_OFF}")
             continue
-        qbt, err = qbt_login(base_url, username, password)
+        qbt, err = qbt_login(base_url, username, password, client=client)
         if qbt is not None:
             if use_saved:
-                _offer_to_save_password(password)
+                _offer_to_save_password(password, client)
             return qbt
         print(f"{C_RED}{err}{C_OFF}")
     raise QbtAuthError(f"login failed after {retries} attempts")
@@ -518,12 +538,13 @@ def login_with_password(qbt_cfg: QbtConfig, password: str, *,
     password. No prompts, no retry loop. Used by the non-interactive flag flow
     and the library/server (anirss_lib.api), which pass notify=None.
     """
+    client = qbt_cfg.get("name", "")
     _ensure_qbt_reachable(qbt_cfg, autostart=autostart, notify=notify)
-    sess = _try_qbt_sid(qbt_cfg["url"], persist=persist)
+    sess = _try_qbt_sid(qbt_cfg["url"], persist=persist, client=client)
     if sess is not None:
         return sess
     if not password and qbt_cfg["save_password"]:
-        password = _load_password() or ""
+        password = _load_password(client) or ""
     if not password:
         # A WebUI that skips the login for this client (localhost auth off, or
         # a whitelisted subnet) answers without any session at all.
@@ -534,7 +555,7 @@ def login_with_password(qbt_cfg: QbtConfig, password: str, *,
         raise QbtAuthError("qBittorrent login required (set ANIRSS_QBT_PASSWORD, use "
             "--password-stdin, or save a password from an interactive run)")
     qbt, err = qbt_login(qbt_cfg["url"], qbt_cfg["username"], password,
-                         persist=persist)
+                         persist=persist, client=client)
     if qbt is None:
         if err and err.startswith("can't reach"):
             raise QbtError(err)

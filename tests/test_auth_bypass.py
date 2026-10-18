@@ -30,7 +30,7 @@ def _cfg(server):
 
 @pytest.fixture(autouse=True)
 def no_cached_sid(monkeypatch):
-    monkeypatch.setattr(session, "_load_sid", lambda: None)
+    monkeypatch.setattr(session, "_load_sid", lambda client="": None)
 
 
 def test_a_webui_that_needs_no_login_is_used_without_a_password():

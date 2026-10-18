@@ -189,7 +189,7 @@ def test_compute_groups_partitions_by_poster():
 
 def test_compute_groups_empty_when_nothing_partitions():
     items = _items("Show 1080p", "Show 1080p")
-    # With 2 items, refinable requires 1 < count < 2 — impossible.
+    # With 2 items, refinable requires 1 < count < 2 - impossible.
     assert compute_groups(items) == []
 
 
@@ -222,7 +222,7 @@ def test_build_refined_query_appends_token_when_query_is_just_the_name():
 
 def test_build_refined_query_does_not_double_prepend_poster():
     items = _items("[A] Show 1080p")
-    # Query already starts with a poster — the second one should not prepend.
+    # Query already starts with a poster - the second one should not prepend.
     assert build_refined_query("[X] Show", ["[A]"], items) == "[X] Show"
 
 
@@ -588,10 +588,10 @@ def test_login_uses_saved_password_without_prompting(tmp_path, monkeypatch):
     _patch_pass_path(monkeypatch, tmp_path)
     _patch_qbt_up(monkeypatch)
     (tmp_path / "qbt.pass").write_text("saved-pw")
-    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
+    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url, **k: None)
     seen = {}
 
-    def fake_login(base, user, pw):
+    def fake_login(base, user, pw, **kw):
         seen["pw"] = pw
         return _session.QbtSession(object(), base), None
 
@@ -611,10 +611,10 @@ def test_login_drops_rejected_saved_password_and_reprompts(tmp_path, monkeypatch
     _patch_qbt_up(monkeypatch)
     pass_path = tmp_path / "qbt.pass"
     pass_path.write_text("old-pw")
-    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
+    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url, **k: None)
     calls = []
 
-    def fake_login(base, user, pw):
+    def fake_login(base, user, pw, **kw):
         calls.append(pw)
         if pw == "old-pw":
             return None, "Fails."
@@ -633,10 +633,10 @@ def test_login_offers_and_saves_new_password(tmp_path, monkeypatch):
     _patch_pass_path(monkeypatch, tmp_path)
     _patch_qbt_up(monkeypatch)
     pass_path = tmp_path / "qbt.pass"
-    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
+    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url, **k: None)
     monkeypatch.setattr(
         _session, "qbt_login",
-        lambda base, user, pw: (_session.QbtSession(object(), base), None))
+        lambda base, user, pw, **kw: (_session.QbtSession(object(), base), None))
     monkeypatch.setattr(_session.getpass, "getpass", lambda prompt="": "typed-pw")
     monkeypatch.setattr("builtins.input", lambda prompt="": "y")  # accept saving
     sess = _session.login_with_retry(_qbt_cfg())
@@ -649,10 +649,10 @@ def test_login_respects_save_password_false(tmp_path, monkeypatch):
     _patch_qbt_up(monkeypatch)
     pass_path = tmp_path / "qbt.pass"
     pass_path.write_text("saved-pw")
-    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url: None)
+    monkeypatch.setattr(_session, "_try_qbt_sid", lambda url, **k: None)
     calls = []
 
-    def fake_login(base, user, pw):
+    def fake_login(base, user, pw, **kw):
         calls.append(pw)
         return _session.QbtSession(object(), base), None
 
@@ -803,7 +803,7 @@ def test_parse_op_flag_ignores_long_and_unknown():
 def test_parse_op_flag_rejects_bad_modifier(monkeypatch):
     # `die` calls sys.exit(1); patch it to raise SystemExit so we can assert.
     # parse_op_flag lives in anirss_lib.cli.args and calls die() imported from
-    # anirss_lib.logging — patch the local binding.
+    # anirss_lib.logging - patch the local binding.
     captured = {}
     def fake_die(msg):
         captured["msg"] = msg
@@ -879,7 +879,7 @@ def test_human_bytes_units():
 #
 # The feed-cache module reads `anirss_lib.config.{FEEDS_CACHE_PATH,STATE_DIR}`
 # at call time (via `_cfg.X` attribute access), so we monkeypatch the config
-# module — that's what the cache code actually consults.
+# module - that's what the cache code actually consults.
 
 def test_feed_cache_round_trip(tmp_path, monkeypatch):
     cache_path = tmp_path / "feeds.txt"

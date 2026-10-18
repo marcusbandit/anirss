@@ -83,11 +83,16 @@ def _resolve_remove_targets(args: list[str], qbt: QbtSession | None) -> list[str
 
 
 def cmd_remove(qbt_cfg: QbtConfig, args: list[str], drop_torrents: bool,
-               drop_files: bool, noconfirm: bool, save_base: str) -> None:
+               drop_files: bool, noconfirm: bool, save_base: str,
+               local_files: bool = True) -> None:
+    if drop_files and not drop_torrents and not local_files:
+        die(f"{qbt_cfg.get('name', 'this client')}'s files are not on this machine: "
+            f"remove them with their torrents (-Rns), which has qBittorrent delete them")
     qbt = login_with_retry(qbt_cfg)
     targets = _resolve_remove_targets(args, qbt)
     plans = plan_remove(qbt, targets, drop_torrents=drop_torrents,
-                        drop_files=drop_files, save_base=save_base)
+                        drop_files=drop_files, save_base=save_base,
+                        local_files=local_files)
 
     print()
     for p in plans:
@@ -102,8 +107,12 @@ def cmd_remove(qbt_cfg: QbtConfig, args: list[str], drop_torrents: bool,
             print(f"  {C_YEL}Note:{C_OFF}    {p.torrent_count_in_qb} torrent(s) "
                   f"will be left in qB and will error (-n without -s)")
         if drop_files:
-            shown = p.save_path if os.path.isdir(p.save_path) \
-                else f"{p.save_path} {C_DIM}(does not exist){C_OFF}"
+            if not local_files:
+                shown = f"{p.save_path} {C_DIM}(on {qbt_cfg.get('name', 'the client')}){C_OFF}"
+            elif os.path.isdir(p.save_path):
+                shown = p.save_path
+            else:
+                shown = f"{p.save_path} {C_DIM}(does not exist){C_OFF}"
             print(f"  {C_CYN}Files:{C_OFF}   {shown}  "
                   f"{C_DIM}({_human_bytes(p.size_bytes)}){C_OFF}")
         print()
@@ -118,5 +127,6 @@ def cmd_remove(qbt_cfg: QbtConfig, args: list[str], drop_torrents: bool,
             return
 
     execute_remove(qbt, plans, drop_torrents=drop_torrents, drop_files=drop_files,
+                   local_files=local_files,
                    notify=lambda msg: print(f"{C_GRN}OK:{C_OFF} {msg}"))
     refresh_feed_cache(qbt)

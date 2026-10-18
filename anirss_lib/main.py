@@ -10,7 +10,7 @@ from anirss_lib.ansi import (
     C_BLD, C_DIM, C_GRN, C_OFF, C_YEL, FILTER_PICKER_LINES,
     right_anchor,
 )
-from anirss_lib.cli.args import ParsedArgs, parse_cli_args, parse_op_flag
+from anirss_lib.cli.args import ParsedArgs, parse_cli_args, parse_op_flag, take_client_flag
 from anirss_lib.cli.commands import cmd_query, cmd_remove, cmd_sync
 from anirss_lib.cli.pickers import (
     ACT_BACK, ACT_CANCEL, ACT_DL_ALL, ACT_DL_PICK, ACT_SUB,
@@ -24,7 +24,7 @@ from anirss_lib.config import (
 )
 from anirss_lib import endpoints as endpoints_mod
 from anirss_lib.endpoints import Endpoint, EndpointState, load_endpoints
-from anirss_lib.errors import AnirssError
+from anirss_lib.errors import AnirssError, ConfigError
 from anirss_lib.format import (
     category_chip, colorize_title, format_stats, show_titles,
     source_header_row,
@@ -35,6 +35,7 @@ from anirss_lib.nyaa import FetchError, fetch_rss
 from anirss_lib.qbt.actions import (
     do_download, do_movie, do_subscribe, do_upload_local_torrent,
 )
+from anirss_lib.qbt.clients import download_root, local_files, qbt_client, qbt_clients
 from anirss_lib.qbt.feeds import maybe_refresh_feed_cache
 from anirss_lib.qbt.refresh import cmd_refresh_on_demand, settle
 from anirss_lib.qbt.session import apply_no_seed, login_with_password, login_with_retry
@@ -53,16 +54,24 @@ _pick_top_n = stats_mod.top_by_downloads
 def _save_base_for(parsed: "ParsedArgs", cfg: "AnirssConfig",
                    ep: Endpoint | None = None) -> str:
     """Pick the destination root: hidden_base when `h` modifier is set
-    (e.g. -Sh, -Th), otherwise the endpoint's own save_base, otherwise the
-    regular one."""
+    (e.g. -Sh, -Th), otherwise the client's own save_base, otherwise the
+    endpoint's, otherwise the regular one. A client's own comes first: it
+    is a path on that client's machine, and an endpoint's need not exist
+    there."""
+    client = cfg["qbittorrent"]
     if parsed.hidden:
-        return cfg["downloads"]["hidden_base"]
+        return download_root(cfg, client, "hidden_base")
+    if client.get("save_base"):
+        return client["save_base"]
     if ep is not None and ep.save_base:
         return ep.save_base
     return cfg["downloads"]["save_base"]
 
 
 def _movie_path_for(cfg: "AnirssConfig", ep: Endpoint | None = None) -> str:
+    client = cfg["qbittorrent"]
+    if client.get("movie_path"):
+        return client["movie_path"]
     if ep is not None and ep.movie_path:
         return ep.movie_path
     return cfg["downloads"]["movie_path"]
@@ -177,6 +186,22 @@ def _print_search_rss_rows(query: str, ep: Endpoint,
         print(f"{C_DIM}(no results on {names}){C_OFF}")
 
 
+def pin_client(cfg: AnirssConfig, argv: list[str], client: str | None) -> None:
+    """One qBittorrent for the whole run (`-c NAME`, else the first client):
+    every CLI path reads cfg["qbittorrent"], so it becomes that client's
+    config. The API server is the exception: its callers pick a client per
+    request, so it keeps them all unless -c names one."""
+    if client is None and argv[:1] == ["--serve"]:
+        return
+    pinned = qbt_client(cfg, client)
+    # ANIRSS_QBT_PASSWORD is the default client's password. Every CLI path
+    # (and a pinned --serve) reads it straight from the environment, so a run
+    # pinned to another client drops it rather than send it to that server.
+    if pinned["name"] != qbt_clients(cfg)[0]["name"]:
+        os.environ.pop("ANIRSS_QBT_PASSWORD", None)
+    cfg["qbittorrent"] = pinned
+
+
 # ---- meta-flag handler ----
 
 def _handle_meta_flags(argv: list[str], cfg: AnirssConfig) -> bool:
@@ -246,13 +271,15 @@ def _handle_op_flag(argv: list[str], cfg: AnirssConfig, parsed: ParsedArgs
             parsed.hidden = True
         return False, url
     if op == "R":
-        save_base = (cfg["downloads"]["hidden_base"] if "h" in mods
-                     else cfg["downloads"]["save_base"])
-        cmd_remove(cfg["qbittorrent"], args=rest,
+        client = cfg["qbittorrent"]
+        save_base = download_root(cfg, client, "hidden_base" if "h" in mods
+                                  else "save_base")
+        cmd_remove(client, args=rest,
                    drop_torrents=("s" in mods),
                    drop_files=("n" in mods),
                    noconfirm=parsed.noconfirm,
-                   save_base=save_base)
+                   save_base=save_base,
+                   local_files=local_files(client))
         return True, None
     if op == "T":
         if not rest:
@@ -342,7 +369,7 @@ def _run_search_state_machine(initial_query: str, cfg: AnirssConfig,
                 continue
             query, selected = initial_query, items
             # Feeds without tracker stats (erai) get them scraped from the
-            # torrents' trackers — what qBittorrent would show after adding.
+            # torrents' trackers - what qBittorrent would show after adding.
             selected = stats_mod.enrich(items)
             state = "refine"
             continue
@@ -370,7 +397,7 @@ def _run_search_state_machine(initial_query: str, cfg: AnirssConfig,
 def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointState,
                         initial_query: str, force_url: str | None) -> None:
     """Execute the chosen action without ever opening fzf or prompting."""
-    # `-T <path>` already gave us a validated file — upload it and exit.
+    # `-T <path>` already gave us a validated file - upload it and exit.
     if parsed.local_torrent_path is not None:
         qbt = _login_for(parsed, cfg)
         name = parsed.name or "anirss"
@@ -381,7 +408,7 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointStat
         print(f"{C_GRN}done.{C_OFF}")
         return
 
-    # Local .torrent file — upload bytes, no nyaa search.
+    # Local .torrent file - upload bytes, no nyaa search.
     if force_url is None and initial_query:
         kind = classify_url(initial_query)
         if kind == UrlKind.LOCAL_TORRENT:
@@ -460,7 +487,7 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointStat
         links = _resolve_links([it.link for it in items], eps.endpoints)
         do_download(qbt, links, default_name, save_base, tags=tags)
     elif parsed.download_n is not None:
-        # "Top N" ranks by downloads — scrape real counts first when the
+        # "Top N" ranks by downloads - scrape real counts first when the
         # feed didn't carry them (otherwise every rank is a fake tie at 0).
         items = stats_mod.enrich(items)
         chosen = _pick_top_n(items, parsed.download_n)
@@ -480,9 +507,9 @@ def _run_noninteractive(parsed: ParsedArgs, cfg: AnirssConfig, eps: EndpointStat
 # ---- interactive runner ----
 
 # Chrome printed *outside* show_titles in the -S URL action-menu flow:
-#   1 — "Subscribe URL: …"
-#   1 — "fetching feed…"
-#   1 — "{N} item(s):"
+#   1 - "Subscribe URL: …"
+#   1 - "fetching feed…"
+#   1 - "{N} item(s):"
 # Plus the action picker (capped at FILTER_PICKER_LINES).
 _URL_FLOW_CHROME_LINES = 3 + FILTER_PICKER_LINES
 
@@ -496,7 +523,7 @@ def _run_interactive(initial_query: str, force_url: str | None,
         exit so no list/picker debris is left in your scrollback.
       Phase 2 (normal output): login, do_*, single ✓ summary line.
 
-    Cancellation at any picker leaves silently — the absence of a ✓ line
+    Cancellation at any picker leaves silently - the absence of a ✓ line
     is the signal that nothing happened. Validation errors that need to
     persist (bad URL, no items) are raised *before* alt screen entry.
     """
@@ -531,7 +558,7 @@ def _run_interactive(initial_query: str, force_url: str | None,
         if kind == UrlKind.NYAA_RSS:
             extracted = extract_nyaa_query(arg)
             if not extracted:
-                die("nyaa URL has no `q=` parameter to search with — "
+                die("nyaa URL has no `q=` parameter to search with - "
                     "use `anirss -S <url>` to subscribe")
             print(f"{C_DIM}extracted search:{C_OFF} {extracted}")
             initial_query = extracted
@@ -547,7 +574,7 @@ def _run_interactive(initial_query: str, force_url: str | None,
             default_name = parsed.name or "anirss"
             print(f"{C_BLD}Local torrent:{C_OFF} {arg}")
 
-    # Phase 1 — gather intent inside the alt screen (only if we still
+    # Phase 1 - gather intent inside the alt screen (only if we still
     # have a UI to show; ONE_SHOT / LOCAL_TORRENT bypassed it above).
     if download_links is None and local_torrent_path is None:
         with terminal.alt_screen():
@@ -609,7 +636,7 @@ def _run_interactive(initial_query: str, force_url: str | None,
                     if movie_choice is None:
                         return
 
-    # Phase 2 — normal screen: name prompt, login, action, summary.
+    # Phase 2 - normal screen: name prompt, login, action, summary.
     name = "" if movie_choice is not None else get_name(parsed.name or default_name)
     movie_title_log = repr(movie_choice.title) if movie_choice else None
     n_dl = len(download_links) if download_links else 0
@@ -673,7 +700,15 @@ def _main() -> None:
     cfg = load_config()
     responsive.set_display(cfg["display"])
 
-    argv = sys.argv[1:]
+    # Hidden: the client names, one per line, for the shell completions.
+    if sys.argv[1:2] == ["--_clients"]:
+        try:
+            print("\n".join(c["name"] for c in qbt_clients(cfg)))
+        except ConfigError:
+            pass
+        return
+
+    argv, client = take_client_flag(sys.argv[1:])
 
     # --_search-rss is special: stay quiet, no readline, no log init;
     # this fires on every keystroke pause inside the live search picker.
@@ -688,6 +723,13 @@ def _main() -> None:
         if query:
             _print_search_rss_rows(query, active, endpoint_list)
         return
+
+    # Help and version answer even when a client block is broken.
+    if argv[:1] in (["-h"], ["--help"], ["-V"], ["--version"]):
+        _handle_meta_flags(argv, cfg)
+        return
+
+    pin_client(cfg, argv, client)
 
     if _handle_meta_flags(argv, cfg):
         return

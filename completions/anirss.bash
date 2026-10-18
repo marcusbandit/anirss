@@ -8,14 +8,26 @@ _anirss() {
     _init_completion -n : || return
     cache="${XDG_STATE_HOME:-$HOME/.local/state}/anirss/feeds.txt"
 
-    local ops="-e --endpoint -Q -Qj -S -Sh -Sy -R -Rs -Rn -Rns -Rh -Rsh -Rnh -Rnsh -T -Th --noconfirm --no-seed --config --migrate-config --refresh-on-demand --serve --version -h --help"
+    local ops="-c --client -e --endpoint -Q -Qj -S -Sh -Sy -R -Rs -Rn -Rns -Rh -Rsh -Rnh -Rnsh -T -Th --noconfirm --no-seed --config --migrate-config --refresh-on-demand --serve --version -h --help"
 
-    if [[ $cword -eq 1 ]]; then
+    if [[ $prev == -c || $prev == --client ]]; then
+        local IFS=$'\n'
+        COMPREPLY=( $(compgen -W "$(anirss --_clients 2>/dev/null)" -- "$cur") )
+        return
+    fi
+
+    # `-c NAME` may come before the operation; the operation is the word after it.
+    local op=1
+    while [[ ${words[op]} == -c || ${words[op]} == --client ]]; do
+        (( op += 2 ))
+    done
+
+    if [[ $cword -eq $op ]]; then
         COMPREPLY=( $(compgen -W "$ops" -- "$cur") )
         return
     fi
 
-    case "${words[1]}" in
+    case "${words[op]}" in
         -R|-Rs|-Rn|-Rns|-Rh|-Rsh|-Rnh|-Rnsh)
             if [[ -f $cache ]]; then
                 local IFS=$'\n'

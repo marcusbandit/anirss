@@ -77,6 +77,41 @@ def parse_op_flag(arg: str) -> tuple[str, set[str]] | None:
     return op, mods
 
 
+# Flags parse_cli_args reads a value after; that value is never a -c.
+_VALUE_FLAGS = frozenset({"--name", "--download", "-e", "--endpoint"})
+
+
+def take_client_flag(argv: list[str]) -> tuple[list[str], str | None]:
+    """Pull `-c NAME` / `--client NAME` / `--client=NAME` out of argv wherever
+    it sits. It picks the qBittorrent for the whole run, so it must come off
+    before the meta and op flags are read from argv[0]."""
+    rest: list[str] = []
+    client: str | None = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--":
+            # Everything after `--` is the user's, never a flag of ours.
+            rest.extend(argv[i:])
+            break
+        if a in _VALUE_FLAGS and i + 1 < len(argv):
+            # `--name -c` names a show "-c"; it does not pick a client.
+            rest.extend(argv[i:i + 2])
+            i += 2
+            continue
+        if a in ("-c", "--client"):
+            i += 1
+            if i >= len(argv):
+                die(f"{a} requires a client name")
+            client = argv[i]
+        elif a.startswith("--client="):
+            client = a.split("=", 1)[1]
+        else:
+            rest.append(a)
+        i += 1
+    return rest, client
+
+
 def parse_cli_args(argv: list[str]) -> ParsedArgs:
     """Pull out long-form flags (--subscribe, --download-all, --download N,
     --movie, --name X, -e/--endpoint NAME, --password-stdin, --noconfirm).
@@ -131,7 +166,7 @@ def parse_cli_args(argv: list[str]) -> ParsedArgs:
             out.endpoint = a.split("=", 1)[1]
         elif a.startswith("--"):
             # An unrecognized `--flag` would silently become part of the search
-            # query, which is almost never what the user meant — and risks
+            # query, which is almost never what the user meant - and risks
             # downloading random hits matching the flag name. Fail loud.
             die(f"unknown flag: {a}")
         else:
