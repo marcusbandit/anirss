@@ -1460,7 +1460,7 @@ def test_relogin_failure_after_expiry_surfaces_and_sets_login_failed(make):
     e = make(stale, outcomes=[stale, QbtAuthError("rejected", rejected=True)])
     with pytest.raises(QbtAuthError, match="rejected"):
         e.ani.subscriptions()
-    assert e.ani._qbt is None and e.ani._login_failed_at is not None
+    assert e.ani._qbt_state["default"].session is None and e.ani._qbt_state["default"].failed_at is not None
 
 
 def test_post_expiry_during_write_is_retried(make):
@@ -1479,7 +1479,7 @@ def test_non_auth_qbt_errors_do_not_trigger_relogin(make):
     with pytest.raises(QbtError):
         e.ani.subscriptions()
     assert len(e.logins.calls) == 1
-    assert e.ani._qbt is not None and e.ani._login_failed_at is None
+    assert e.ani._qbt_state["default"].session is not None and e.ani._qbt_state["default"].failed_at is None
 
 
 def test_login_failure_blocks_further_logins_until_password_swap(make, monkeypatch):
@@ -1488,13 +1488,13 @@ def test_login_failure_blocks_further_logins_until_password_swap(make, monkeypat
     e = make(outcomes=[QbtAuthError("bad password", rejected=True), good])
     with pytest.raises(QbtAuthError, match="bad password"):
         e.ani.subscriptions()
-    assert e.ani._login_failed_at is not None and len(e.logins.calls) == 1
+    assert e.ani._qbt_state["default"].failed_at is not None and len(e.logins.calls) == 1
     for _ in range(3):                                # never retried on its own
         with pytest.raises(QbtAuthError, match="set_qbt_password"):
             e.ani.subscriptions()
     assert len(e.logins.calls) == 1
     e.ani.set_qbt_password("new")
-    assert e.ani._login_failed_at is None
+    assert e.ani._qbt_state["default"].failed_at is None
     assert e.ani.subscriptions() == []
     assert len(e.logins.calls) == 2
     assert e.logins.calls[1]["password"] == "new"
@@ -1516,7 +1516,7 @@ def test_login_failed_recovers_via_still_valid_cached_sid(make, monkeypatch):
     with pytest.raises(QbtAuthError):
         e.ani.subscriptions()
     assert e.ani.subscriptions() == []                # picked up the CLI's session
-    assert e.ani._login_failed_at is None
+    assert e.ani._qbt_state["default"].failed_at is None
     assert len(e.logins.calls) == 1
 
 
@@ -1524,7 +1524,7 @@ def test_qbt_unreachable_error_does_not_set_login_failed(make):
     e = make(outcomes=[QbtError("can't reach"), FakeQbt()])
     with pytest.raises(QbtError):
         e.ani.subscriptions()
-    assert e.ani._login_failed_at is None
+    assert e.ani._qbt_state["default"].failed_at is None
     assert e.ani.subscriptions() == []                # next call tries again
     assert len(e.logins.calls) == 2
 
@@ -1535,8 +1535,9 @@ def test_qbt_status_reports_flags_without_logging_in(make, monkeypatch):
                         lambda url, timeout: seen.append((url, timeout)) or True)
     monkeypatch.setattr(session_mod, "_try_qbt_sid", lambda url, **k: None)
     e = make(outcomes=[QbtAuthError("no", rejected=True)])
-    assert e.ani.qbt_status() == {"url": "http://localhost:8080", "reachable": True,
-                                  "authenticated": False, "login_failed": False}
+    assert e.ani.qbt_status() == {"client": "default", "url": "http://localhost:8080",
+                                  "reachable": True, "authenticated": False,
+                                  "login_failed": False}
     with pytest.raises(QbtAuthError):
         e.ani.subscriptions()
     st = e.ani.qbt_status()

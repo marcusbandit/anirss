@@ -38,7 +38,7 @@ def test_unreachable_login_is_qbt_error_not_latched(monkeypatch):
     with pytest.raises(QbtError) as ei:
         ani.subscriptions()
     assert not isinstance(ei.value, QbtAuthError)
-    assert ani._login_failed_at is None
+    assert ani._qbt_state["default"].failed_at is None
 
 
 def test_rejected_login_retries_after_cooldown(monkeypatch):
@@ -71,6 +71,6 @@ def test_remove_dedupes_names(monkeypatch):
         return []
     monkeypatch.setattr(api.actions, "plan_remove", fake_plan)
     ani = Anirss({})
-    monkeypatch.setattr(ani, "_with_qbt", lambda fn: fn(object()))
+    monkeypatch.setattr(ani, "_with_qbt", lambda fn, client=None: fn(object()))
     ani.remove(["A", "B", "A"], dry_run=True)
     assert seen["names"] == ["A", "B"]

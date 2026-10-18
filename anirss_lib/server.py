@@ -22,7 +22,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from anirss_lib.ansi import C_BLD, C_DIM, C_GRN, C_OFF
-from anirss_lib.api import Anirss, endpoint_info, item_from_dict, to_jsonable
+from anirss_lib.api import (
+    Anirss,
+    client_info,
+    endpoint_info,
+    item_from_dict,
+    to_jsonable,
+)
 from anirss_lib.config import STATE_DIR
 from anirss_lib.errors import (
     AnirssError,
@@ -308,6 +314,7 @@ class Handler(BaseHTTPRequestHandler):
         table: dict[str, dict[str, Callable]] = {
             "/health": {"GET": self.h_health},
             "/qbt/status": {"GET": self.h_qbt_status},
+            "/clients": {"GET": self.h_clients},
             "/endpoints": {"GET": self.h_endpoints},
             "/search": {"GET": self.h_search_get, "POST": self.h_search_post},
             "/feed": {"POST": self.h_feed},
@@ -338,7 +345,10 @@ class Handler(BaseHTTPRequestHandler):
         return 200, {"ok": True, "version": self.ani.version}
 
     def h_qbt_status(self, q, _):
-        return 200, self.ani.qbt_status()
+        return 200, self.ani.qbt_status(_str(q, "client"))
+
+    def h_clients(self, q, _):
+        return 200, {"clients": [client_info(c) for c in self.ani.clients()]}
 
     def h_endpoints(self, q, _):
         return 200, {"endpoints": [endpoint_info(ep) for ep in self.ani.endpoints()]}
@@ -388,20 +398,23 @@ class Handler(BaseHTTPRequestHandler):
         return 200, _outcome_json(self.ani, out, endpoint)
 
     def h_subs_list(self, q, _):
-        return 200, {"subscriptions": to_jsonable(self.ani.subscriptions())}
+        return 200, {"subscriptions": to_jsonable(
+            self.ani.subscriptions(client=_str(q, "client")))}
 
     def h_subscribe(self, q, _):
         b = self._json_body()
         hidden = _bool(b.get("hidden"))
+        client = _str(b, "client")
         feed_url = _str(b, "feed_url")
         if feed_url:
             res = self.ani.subscribe_feed(feed_url, name=_str(b, "name"),
-                                          hidden=hidden)
+                                          hidden=hidden, client=client)
         else:
             res = self.ani.subscribe(_str(b, "query", required=True) or "",
                                      endpoint=_str(b, "endpoint"),
                                      items=_items(b, required=False),
-                                     name=_str(b, "name"), hidden=hidden)
+                                     name=_str(b, "name"), hidden=hidden,
+                                     client=client)
         return 201, to_jsonable(res)
 
     def h_subscribe_preview(self, q, _):
@@ -417,7 +430,8 @@ class Handler(BaseHTTPRequestHandler):
         dry = _bool(opts.get("dry_run"))
         plans = self.ani.remove(names, drop_torrents=_bool(opts.get("torrents")),
                                 drop_files=_bool(opts.get("files")),
-                                hidden=_bool(opts.get("hidden")), dry_run=dry)
+                                hidden=_bool(opts.get("hidden")), dry_run=dry,
+                                client=_str(opts, "client"))
         return 200, {"dry_run": dry, "plans": to_jsonable(plans)}
 
     def h_remove_one(self, q, name):
@@ -433,23 +447,27 @@ class Handler(BaseHTTPRequestHandler):
     def h_download(self, q, _):
         b = self._json_body()
         hidden = _bool(b.get("hidden"))
+        client = _str(b, "client")
         items = _items(b, required=False)
         if items is not None:
-            res = self.ani.download_items(items, name=_str(b, "name"), hidden=hidden)
+            res = self.ani.download_items(items, name=_str(b, "name"), hidden=hidden,
+                                          client=client)
         else:
             links = _str_list(b, "links")
             name = _str(b, "name", required=True) or ""
-            res = self.ani.download(links or [], name=name, hidden=hidden)
+            res = self.ani.download(links or [], name=name, hidden=hidden, client=client)
         return 201, to_jsonable(res)
 
     def h_movie(self, q, _):
         b = self._json_body()
-        return 201, to_jsonable(self.ani.movie(_str(b, "link", required=True) or ""))
+        return 201, to_jsonable(self.ani.movie(_str(b, "link", required=True) or "",
+                                               client=_str(b, "client")))
 
     def h_torrents(self, q, _):
         hashes = [h for h in (q.get("hashes") or "").split("|") if h] or None
         return 200, {"torrents": self.ani.torrents(
-            name=q.get("name") or None, hashes=hashes, hidden=_bool(q.get("hidden")))}
+            name=q.get("name") or None, hashes=hashes, hidden=_bool(q.get("hidden")),
+            client=_str(q, "client"))}
 
     def h_upload(self, q, _):
         ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip()
@@ -458,7 +476,8 @@ class Handler(BaseHTTPRequestHandler):
         data = self._read_body(MAX_TORRENT_BYTES)
         res = self.ani.upload_torrent(data, file_name=q.get("file_name") or "file.torrent",
                                       name=q.get("name") or None,
-                                      hidden=_bool(q.get("hidden")))
+                                      hidden=_bool(q.get("hidden")),
+                                      client=_str(q, "client"))
         return 201, to_jsonable(res)
 
 

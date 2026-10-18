@@ -1,4 +1,4 @@
-"""anirss — search nyaa.si, then either subscribe (RSS rule) or download now in qBittorrent.
+"""anirss - search nyaa.si, then either subscribe (RSS rule) or download now in qBittorrent.
 
 Usage:
     anirss                        Prompt for a search.
@@ -9,14 +9,17 @@ Usage:
 
     anirss -e <endpoint> [query]  Start on a specific endpoint (see [[endpoint]]
                                   in config; Ctrl-E switches inside the picker).
+    anirss -c <client> ...        Use another qBittorrent for this run (see
+                                  [[qbittorrent.client]] in config). Goes with
+                                  every other flag: -c seedbox -Q, -c local --serve.
 
     anirss -S <url>               Subscribe: skip search/refine, go to action menu.
     anirss -Sy                    Sync the feed cache from qBittorrent.
-    anirss -Sh <url>              Subscribe — save under [downloads].hidden_base.
+    anirss -Sh <url>              Subscribe - save under [downloads].hidden_base.
 
     anirss -T <path.torrent>      Upload a local .torrent file directly.
                                   (tab-completes filesystem paths)
-    anirss -Th <path.torrent>     Upload — save under [downloads].hidden_base.
+    anirss -Th <path.torrent>     Upload - save under [downloads].hidden_base.
 
     h modifier                    Add to -S, -T, or -R to use hidden_base
                                   (config: [downloads].hidden_base, default
@@ -57,7 +60,8 @@ Backend (for frontends and other apps; see docs/agents/):
     Python: `from anirss_lib.api import Anirss`.
 
 Config: ~/.config/anirss/config.toml (auto-created on first run).
-State:  ~/.local/state/anirss/   (feeds.txt cache, qbt.sid session cookie, anirss.log)
+State:  ~/.local/state/anirss/   (feeds.txt cache, qbt.sid session cookie, anirss.log;
+                                  a named client's session is qbt-<name>.sid)
 """
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"

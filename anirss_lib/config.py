@@ -21,6 +21,17 @@ FEEDS_CACHE_PATH = STATE_DIR / "feeds.txt"
 FEED_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 
+class QbtClientConfig(TypedDict, total=False):
+    """One [[qbittorrent.client]] block. Keys left out come from [qbittorrent]."""
+    name: str
+    url: str
+    username: str
+    login_retries: int
+    save_password: bool
+    tags: list[str]
+    start_command: str
+
+
 class QbtConfig(TypedDict):
     url: str
     username: str
@@ -32,6 +43,10 @@ class QbtConfig(TypedDict):
     # Optional: when unset, anirss auto-detects qbittorrent-nox / qbittorrent
     # on PATH. Only used for a local url (localhost / 127.0.0.1 / ::1).
     start_command: NotRequired[str]
+    # Several qBittorrents, by name (see qbt/clients.py). Absent = one client.
+    client: NotRequired[list[QbtClientConfig]]
+    # Set on a resolved client (qbt_client()); [qbittorrent] itself has none.
+    name: NotRequired[str]
 
 
 class DownloadsConfig(TypedDict):
@@ -119,6 +134,19 @@ tags = ["Anime"]
 # start it for you. By default it auto-detects qbittorrent-nox (preferred) or
 # qbittorrent on PATH. Uncomment to force a specific launch command instead.
 #start_command = "qbittorrent"
+# More than one qBittorrent (a seedbox and the one on this machine, say)? Name
+# each in a [[qbittorrent.client]] block with its own url; the url above is
+# then unused, and every other key above (username, tags, ...) is the default a
+# block can override. The first block is the default client: `anirss -c <name>`
+# uses another for one run, and the API takes `client`. Each client keeps its
+# own session and saved password (qbt-<name>.sid / .pass in ~/.local/state/anirss).
+#[[qbittorrent.client]]
+#name = "seedbox"
+#url = "http://192.0.2.10:8080"
+#
+#[[qbittorrent.client]]
+#name = "local"
+#url = "http://localhost:8080"
 
 [downloads]
 # Subscriptions and bulk downloads create a per-name subdirectory under this.
@@ -327,6 +355,10 @@ def _env_overrides(cfg: AnirssConfig) -> None:
         value = os.environ.get(name, "").strip()
         if value:
             cfg["qbittorrent"][key] = value
+    # The app names the one client it wants, so the user's own list of
+    # [[qbittorrent.client]] blocks would only let a caller reach past it.
+    if os.environ.get("ANIRSS_QBT_URL", "").strip():
+        cfg["qbittorrent"].pop("client", None)
 
 
 def build_config(user_cfg: dict | None = None) -> AnirssConfig:
