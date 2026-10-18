@@ -54,7 +54,7 @@ from anirss_lib.titles import show_name
 from anirss_lib.types import Item
 
 __all__ = [
-    "AddResult", "Anirss", "AnirssError", "Endpoint", "Item", "RefineOutcome",
+    "FEATURES", "AddResult", "Anirss", "AnirssError", "Endpoint", "Item", "RefineOutcome",
     "RemovePlan", "RuleInfo", "SearchResult", "SubscribeResult",
     "SubscriptionSpec", "client_info", "endpoint_info", "item_from_dict",
     "redact_url", "to_jsonable",
@@ -71,6 +71,17 @@ LINK_SCHEMES = ("magnet:", "http://", "https://")
 # to qB as URLs. AniBeam waits 60s for the whole call.
 FETCH_DEADLINE_S = 20.0
 LOGIN_COOLDOWN_S = 300
+
+# What this anirss can do, by name, so a frontend checks for what it relies on
+# instead of comparing version numbers. GET /health lists them. A name keeps
+# its meaning once listed; a new capability gets a new name.
+#   qbt_clients      several qBittorrents ([[qbittorrent.client]]), GET /clients,
+#                    and `client` on every route that reaches qBittorrent.
+#   qbt_env_session  an ANIRSS_QBT_URL the config does not name keeps its own
+#                    session and saved password, so pointing anirss at another
+#                    qBittorrent never sends it the configured one's. An anirss
+#                    without it fails at nothing; it only misbehaves quietly.
+FEATURES = ("qbt_clients", "qbt_env_session")
 
 
 class SearchResult(NamedTuple):
@@ -230,6 +241,11 @@ class Anirss:
     @property
     def version(self) -> str:
         return anirss_lib.__version__
+
+    @property
+    def features(self) -> list[str]:
+        """The capabilities in FEATURES, for GET /health."""
+        return list(FEATURES)
 
     def endpoints(self) -> list[Endpoint]:
         """Configured search endpoints in priority order (first = default)."""

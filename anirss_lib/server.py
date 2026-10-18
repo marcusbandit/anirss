@@ -342,7 +342,7 @@ class Handler(BaseHTTPRequestHandler):
     # -- handlers: (query-params, path-arg) -> (status, payload) --
 
     def h_health(self, q, _):
-        return 200, {"ok": True, "version": self.ani.version}
+        return 200, {"ok": True, "version": self.ani.version, "features": self.ani.features}
 
     def h_qbt_status(self, q, _):
         return 200, self.ani.qbt_status(_str(q, "client"))

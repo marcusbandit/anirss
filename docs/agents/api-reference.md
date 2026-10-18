@@ -495,8 +495,18 @@ No auth. The Host guard still applies.
 curl $BASE/health
 ```
 ```json
-{"ok": true, "version": "0.5.0"}
+{"ok": true, "version": "0.5.0", "features": ["qbt_clients", "qbt_env_session"]}
 ```
+
+`features` names what this anirss can do. Check for the one you rely on rather
+than comparing `version`: a fork or a checkout can report any version, and an
+anirss from before a name existed simply does not list it (one older than 0.5.0
+has no `features` at all). A name keeps its meaning once listed.
+
+| Feature | Since | Meaning |
+| --- | --- | --- |
+| `qbt_clients` | 0.5.0 | Several qBittorrents in `[[qbittorrent.client]]` blocks, [GET /clients](#get-clients), and `client` on every route that reaches qBittorrent. |
+| `qbt_env_session` | 0.5.0 | An `ANIRSS_QBT_URL` that the config does not name keeps its own session and saved password, so an app that points anirss at another qBittorrent never sends it the configured one's. An anirss without it fails at nothing, it only misbehaves quietly, so an app that sets `ANIRSS_QBT_URL` should refuse one that does not list it. |
 
 Every route that reaches qBittorrent (`/qbt/status`, `/subscriptions` and
 `/subscriptions/remove`, `DELETE /subscriptions/{name}`, `/downloads`, `/movie`,
