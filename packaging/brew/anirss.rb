@@ -1,8 +1,8 @@
 class Anirss < Formula
   desc "Search nyaa.si and hand the result to qBittorrent"
   homepage "https://github.com/marcusbandit/anirss"
-  url "https://github.com/marcusbandit/anirss/archive/refs/tags/v0.4.2.tar.gz"
-  sha256 "0f8e3a7e184a6100d4e2bb05d081187353ea64fde8b35cbc136215e83f95c9fc"
+  url "https://github.com/marcusbandit/anirss/archive/refs/tags/v0.5.0.tar.gz"
+  sha256 "9b786cea875ae30077b77f6da86ca4a36e84b537f8a70a85100712d62abf8143"
   license "GPL-3.0-or-later"
   head "https://github.com/marcusbandit/anirss.git", branch: "main"
 
