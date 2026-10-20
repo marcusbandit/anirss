@@ -29,6 +29,7 @@ from anirss_lib.errors import (
     AnirssError,
     ConfigError,
     FetchError,
+    NoEndpointsError,
     NotFoundError,
     QbtAuthError,
     QbtError,
@@ -208,7 +209,7 @@ def test_config_dict_builds_without_disk_access(tmp_path, monkeypatch):
     ani = Anirss(config={"qbittorrent": {"tags": ["x"]}})
     assert ani.config["qbittorrent"]["tags"] == ["x"]
     assert ani.config["qbittorrent"]["url"] == DEFAULT_CONFIG["qbittorrent"]["url"]
-    assert [e.name for e in ani.endpoints()] == ["nyaa"]
+    assert ani.endpoints() == []
     assert ani.version == anirss_lib.__version__
     assert not (tmp_path / "home").exists()
     assert not (tmp_path / "cfg").exists()
@@ -218,7 +219,7 @@ def test_config_dict_builds_without_disk_access(tmp_path, monkeypatch):
 def test_empty_config_dict_is_defaults_not_disk(monkeypatch):
     monkeypatch.setattr(api_mod, "load_config",
                         lambda *a, **k: pytest.fail("must not read disk"))
-    assert Anirss(config={}).config["downloads"]["movie_path"].startswith(os.sep)
+    assert Anirss(config={"endpoint": [NYAA_EP]}).config["downloads"]["movie_path"].startswith(os.sep)
 
 
 def test_build_config_does_not_mutate_defaults():
@@ -251,7 +252,7 @@ def test_legacy_search_section_synthesizes_endpoint():
 
 
 def test_endpoints_returns_a_copy():
-    ani = Anirss(config={})
+    ani = Anirss(config={"endpoint": [NYAA_EP]})
     ani.endpoints().clear()
     assert len(ani.endpoints()) == 1
 
@@ -273,7 +274,7 @@ def test_unknown_endpoint_everywhere(call, monkeypatch):
     monkeypatch.setattr(endpoints_mod, "fetch_items",
                         lambda *a: pytest.fail("no fetch for unknown endpoint"))
     with pytest.raises(NotFoundError):
-        call(Anirss(config={}))
+        call(Anirss(config={"endpoint": [NYAA_EP]}))
 
 
 @pytest.mark.parametrize("bad", [
@@ -294,7 +295,7 @@ def test_load_config_missing_path_writes_nothing(tmp_path):
     assert not path.exists() and not path.parent.exists()
     assert list(tmp_path.iterdir()) == []
     assert cfg["qbittorrent"]["url"] == DEFAULT_CONFIG["qbittorrent"]["url"]
-    assert cfg["endpoint"][0]["name"] == "nyaa"
+    assert cfg["endpoint"] == []
 
 
 def test_load_config_missing_path_bootstraps_only_when_asked(tmp_path, capsys):
@@ -321,7 +322,7 @@ def test_load_config_lenient_bad_toml_warns_and_uses_defaults(tmp_path, capsys):
 
 def test_anirss_from_missing_config_path_is_defaults(tmp_path):
     ani = Anirss(config_path=tmp_path / "nope" / "config.toml")
-    assert ani.endpoint().name == "nyaa"
+    assert ani.endpoints() == []
     assert not (tmp_path / "nope").exists()
 
 
@@ -489,7 +490,7 @@ def test_search_enrich_runs_after_source_tagging(ani3, fetcher, monkeypatch):
 
 
 def test_fetch_feed_validates_scheme_and_parses(monkeypatch):
-    ani = Anirss(config={})
+    ani = Anirss(config={"endpoint": [NYAA_EP]})
     monkeypatch.setattr(api_mod, "fetch_rss", lambda url: _frieren(1))
     assert len(ani.fetch_feed("https://f.example/rss")) == 1
     for bad in ("ftp://x", "file:///etc/passwd", "", None):
@@ -498,7 +499,7 @@ def test_fetch_feed_validates_scheme_and_parses(monkeypatch):
 
 
 def test_top_and_best_item_helpers():
-    ani = Anirss(config={})
+    ani = Anirss(config={"endpoint": [NYAA_EP]})
     items = [Item("a", "l1", downloads=1), Item("b", "l2", downloads=50),
              Item("c", "l3")]
     assert [it.title for it in ani.top(items, 2)] == ["b", "a"]
@@ -822,7 +823,7 @@ def test_apply_matches_tui_refine_loop(monkeypatch, ep, items, pick, kw):
 
 
 def test_analyze_applies_auto_resolution():
-    ani = Anirss(config={})
+    ani = Anirss(config={"endpoint": [NYAA_EP]})
     items = _frieren(2, res="720p") + _frieren(2, res="1080p")
     res = ani.analyze("Frieren", items)
     assert res["query"] == "Frieren 1080p"
@@ -833,7 +834,7 @@ def test_analyze_applies_auto_resolution():
 
 
 def test_analyze_skips_auto_resolution_when_a_title_lacks_one():
-    ani = Anirss(config={})
+    ani = Anirss(config={"endpoint": [NYAA_EP]})
     items = [*_frieren(2), Item("[Group] Frieren - 03", "l3")]
     res = ani.analyze("Frieren", items)
     assert res["query"] == "Frieren" and res["items"] == items
@@ -842,7 +843,7 @@ def test_analyze_skips_auto_resolution_when_a_title_lacks_one():
 
 
 def test_analyze_leaves_query_with_resolution_alone():
-    ani = Anirss(config={})
+    ani = Anirss(config={"endpoint": [NYAA_EP]})
     items = _frieren(1, res="720p") + _frieren(1, res="1080p")
     res = ani.analyze(" Frieren 720p ", items)
     assert res["query"] == "Frieren 720p" and res["items"] == items
@@ -851,7 +852,7 @@ def test_analyze_leaves_query_with_resolution_alone():
 
 
 def test_analyze_auto_resolution_can_be_disabled():
-    ani = Anirss(config={})
+    ani = Anirss(config={"endpoint": [NYAA_EP]})
     items = _frieren(1, res="720p") + _frieren(1, res="1080p")
     res = ani.analyze("Frieren", items, auto_resolution=False)
     assert res["query"] == "Frieren" and res["items"] == items
@@ -859,7 +860,7 @@ def test_analyze_auto_resolution_can_be_disabled():
 
 
 def test_analyze_groups_carry_member_indexes():
-    ani = Anirss(config={})
+    ani = Anirss(config={"endpoint": [NYAA_EP]})
     items = [Item("[SubsPlease] Frieren - 01 (1080p) [A1].mkv", "l1"),
              Item("[SubsPlease] Frieren - 02 (1080p) [A2].mkv", "l2"),
              Item("[Erai-raws] Frieren - 02 [1080p][HEVC].mkv", "l3"),
@@ -884,7 +885,7 @@ def test_analyze_groups_carry_member_indexes():
 
 
 def test_analyze_member_indexes_follow_filtered_items():
-    ani = Anirss(config={})
+    ani = Anirss(config={"endpoint": [NYAA_EP]})
     items = [Item("[A] Show - 01 (720p)", "x0"),
              Item("[A] Show - 02 (1080p)", "x1"),
              Item("[A] Show - 03 (1080p) [v2]", "x2"),
@@ -905,7 +906,7 @@ def test_group_members_helper():
 
 
 def test_analyze_best_fit_dict():
-    ani = Anirss(config={})
+    ani = Anirss(config={"endpoint": [NYAA_EP]})
     items = [Item("[Erai-raws] Frieren - 02 [1080p][HEVC].mkv", "l1"),
              Item("[SubsPlease] Frieren - 01 (720p) [AB].mkv", "l2")]
     res = ani.analyze("Frieren", items)
@@ -928,12 +929,12 @@ def test_analyze_client_side_flag():
 
 
 def test_analyze_result_is_jsonable():
-    res = Anirss(config={}).analyze("Frieren", _frieren(3))
+    res = Anirss(config={"endpoint": [NYAA_EP]}).analyze("Frieren", _frieren(3))
     json.dumps(to_jsonable(res))
 
 
 def test_analyze_empty_items_does_not_crash():
-    res = Anirss(config={}).analyze("Frieren", [])
+    res = Anirss(config={"endpoint": [NYAA_EP]}).analyze("Frieren", [])
     assert res["items"] == [] and res["groups"] == []
 
 
@@ -1862,3 +1863,34 @@ def test_item_from_dict_covers_every_item_field():
             for f in Item._fields}
     item = item_from_dict(full)
     assert item._asdict() == full
+
+
+# ------------------------------------------------------- endpoint writes
+
+
+def test_no_endpoints_is_its_own_error(monkeypatch):
+    monkeypatch.setattr(endpoints_mod, "fetch_items",
+                        lambda *a: pytest.fail("nothing to fetch"))
+    ani = Anirss(config={})
+    assert ani.endpoints() == []
+    with pytest.raises(NoEndpointsError):
+        ani.search("Frieren")
+
+
+def test_add_and_remove_endpoint_write_the_file_and_reload(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text(config_mod.DEFAULT_CONFIG_TOML)
+    ani = Anirss(config_path=path)
+    ep, replaced = ani.add_endpoint(dict(RSS1_EP))
+    assert (ep.name, replaced) == ("rss1", False)
+    assert [e.name for e in ani.endpoints()] == ["rss1"]
+    ani.add_endpoint(dict(NYAA_EP))
+    assert ani.endpoint().name == "rss1"
+    ani.remove_endpoint("rss1")
+    assert [e.name for e in ani.endpoints()] == ["nyaa"]
+    assert [e.name for e in Anirss(config_path=path).endpoints()] == ["nyaa"]
+
+
+def test_a_config_dict_has_no_file_to_write():
+    with pytest.raises(ConfigError):
+        Anirss(config={}).add_endpoint(dict(NYAA_EP))

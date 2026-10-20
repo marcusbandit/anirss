@@ -21,6 +21,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from anirss_lib import config as config_mod
 from anirss_lib.ansi import C_BLD, C_DIM, C_GRN, C_OFF
 from anirss_lib.api import (
     Anirss,
@@ -34,6 +35,7 @@ from anirss_lib.errors import (
     AnirssError,
     ConfigError,
     FetchError,
+    NoEndpointsError,
     NotFoundError,
     QbtAuthError,
     QbtError,
@@ -144,6 +146,7 @@ _ERRORS: list[tuple[type, int, str]] = [
     (QbtAuthError, 503, "qbt_auth_required"),
     (QbtError, 502, "qbt_error"),
     (FetchError, 502, "fetch_error"),
+    (NoEndpointsError, 409, "no_endpoints"),
     (ConfigError, 500, "config_error"),
     (AnirssError, 400, "error"),
 ]
@@ -315,7 +318,7 @@ class Handler(BaseHTTPRequestHandler):
             "/health": {"GET": self.h_health},
             "/qbt/status": {"GET": self.h_qbt_status},
             "/clients": {"GET": self.h_clients},
-            "/endpoints": {"GET": self.h_endpoints},
+            "/endpoints": {"GET": self.h_endpoints, "POST": self.h_endpoint_add},
             "/search": {"GET": self.h_search_get, "POST": self.h_search_post},
             "/feed": {"POST": self.h_feed},
             "/enrich": {"POST": self.h_enrich},
@@ -332,6 +335,11 @@ class Handler(BaseHTTPRequestHandler):
         if route in table:
             fn = table[route].get(method)
             return (fn, None) if fn else (None, "")
+        if route.startswith("/endpoints/"):
+            name = urllib.parse.unquote(route[len("/endpoints/"):])
+            if method == "DELETE":
+                return self.h_endpoint_remove, name
+            return None, ""
         if route.startswith("/subscriptions/"):
             name = urllib.parse.unquote(route[len("/subscriptions/"):])
             if method == "DELETE":
@@ -352,6 +360,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def h_endpoints(self, q, _):
         return 200, {"endpoints": [endpoint_info(ep) for ep in self.ani.endpoints()]}
+
+    def h_endpoint_add(self, q, _):
+        ep, replaced = self.ani.add_endpoint(self._json_body())
+        return (200 if replaced else 201), {"endpoint": endpoint_info(ep),
+                                            "replaced": replaced}
+
+    def h_endpoint_remove(self, q, name):
+        self.ani.remove_endpoint(name)
+        return 200, {"removed": name}
 
     def h_search_get(self, q, _):
         res = self.ani.search(q.get("q", ""), q.get("endpoint") or None,
@@ -529,7 +546,7 @@ def serve(argv: list[str], cfg) -> None:
     init_log(cfg["logging"]["log_path"])
     token, source = resolve_token(cfg["server"].get("token") or "",
                                   os.environ.get("ANIRSS_API_TOKEN"))
-    ani = Anirss(cfg)
+    ani = Anirss(cfg, config_file=config_mod.CONFIG_PATH)
     srv = make_server(ani, host, port, token, cfg["server"].get("cors_origins"))
     bound_host, bound_port = srv.server_address[:2]
     print(f"{C_GRN}anirss API{C_OFF} on {C_BLD}http://{bound_host}:{bound_port}{API}{C_OFF}",

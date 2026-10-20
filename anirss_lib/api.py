@@ -21,19 +21,29 @@ import dataclasses
 import os
 import threading
 import time
+import tomllib
 import urllib.parse
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, NamedTuple, TypeVar
 
 import anirss_lib
+from anirss_lib import config as config_mod
+from anirss_lib import endpoint_config, refinement
 from anirss_lib import endpoints as endpoints_mod
-from anirss_lib import refinement
 from anirss_lib import stats as stats_mod
-from anirss_lib.config import AnirssConfig, QbtConfig, build_config, load_config
+from anirss_lib.config import (
+    AnirssConfig,
+    QbtConfig,
+    build_config,
+    load_config,
+)
 from anirss_lib.endpoints import Endpoint, SubscriptionSpec, load_endpoints
 from anirss_lib.errors import (
     AnirssError,
+    ConfigError,
     FetchError,
+    NoEndpointsError,
     NotFoundError,
     QbtAuthError,
     ValidationError,
@@ -81,7 +91,7 @@ LOGIN_COOLDOWN_S = 300
 #                    session and saved password, so pointing anirss at another
 #                    qBittorrent never sends it the configured one's. An anirss
 #                    without it fails at nothing; it only misbehaves quietly.
-FEATURES = ("qbt_clients", "qbt_env_session")
+FEATURES = ("qbt_clients", "qbt_env_session", "endpoint_writes")
 
 
 class SearchResult(NamedTuple):
@@ -223,12 +233,18 @@ class Anirss:
                  config_path: str | os.PathLike | None = None,
                  qbt_password: str | None = None,
                  autostart_qbt: bool = False,
-                 persist_session: bool = False) -> None:
+                 persist_session: bool = False,
+                 config_file: str | os.PathLike | None = None) -> None:
         if config is not None:
             self.config: AnirssConfig = build_config(config)
         else:
             self.config = load_config(config_path, bootstrap=False, strict=True)
+            config_file = config_file or config_path or config_mod.CONFIG_PATH
+        # The file add_endpoint/remove_endpoint write; None (a config given
+        # as a dict, with no file named) makes them refuse.
+        self.config_file = Path(config_file).expanduser() if config_file else None
         self._endpoints = load_endpoints(self.config)
+        self._endpoints_lock = threading.Lock()
         self._clients = qbt_clients(self.config)
         self._qbt_state = {c["name"]: _QbtState() for c in self._clients}
         self._qbt_state[self._clients[0]["name"]].password = qbt_password
@@ -254,6 +270,8 @@ class Anirss:
         return list(self._endpoints)
 
     def endpoint(self, name: str | None = None) -> Endpoint:
+        if not self._endpoints:
+            raise NoEndpointsError(endpoints_mod.NO_ENDPOINTS)
         if name is None:
             return self._endpoints[0]
         for ep in self._endpoints:
@@ -261,6 +279,39 @@ class Anirss:
                 return ep
         names = ", ".join(e.name for e in self._endpoints)
         raise NotFoundError(f"unknown endpoint {name!r} (configured: {names})")
+
+    def add_endpoint(self, spec: dict) -> tuple[Endpoint, bool]:
+        """Writes an endpoint into the config file and starts using it: after
+        the others, or in place of the one with the same name. Only `name`,
+        `kind`, `url`, `category` and `filter` are accepted; on-demand
+        endpoints run commands and stay hand-written. Returns the endpoint and
+        whether it replaced one."""
+        clean = endpoint_config.check_spec(spec)
+        path = self._writable_config()
+        with self._endpoints_lock:
+            replaced = endpoint_config.add_endpoint(path, clean)
+            self._reload_endpoints(path)
+            return self.endpoint(clean["name"]), replaced
+
+    def remove_endpoint(self, name: str) -> None:
+        """Takes an endpoint out of the config file and out of use. Its
+        subscriptions keep running in qBittorrent."""
+        path = self._writable_config()
+        with self._endpoints_lock:
+            endpoint_config.remove_endpoint(path, name)
+            self._reload_endpoints(path)
+
+    def _writable_config(self) -> Path:
+        if self.config_file is None:
+            raise ConfigError("this anirss has no config file to write endpoints to")
+        return self.config_file
+
+    def _reload_endpoints(self, path: Path) -> None:
+        with path.open("rb") as f:
+            user_cfg = tomllib.load(f)
+        endpoints = load_endpoints({"endpoint": user_cfg.get("endpoint") or []})
+        self.config["endpoint"] = user_cfg.get("endpoint") or []
+        self._endpoints = endpoints
 
     def search(self, query: str, endpoint: str | None = None, *,
                fallback: bool = True, enrich: bool = False) -> SearchResult:

@@ -116,7 +116,7 @@ exits.
 
 ```python
 Anirss(config=None, *, config_path=None, qbt_password=None,
-       autostart_qbt=False, persist_session=False)
+       autostart_qbt=False, persist_session=False, config_file=None)
 ```
 
 | Option | Meaning |
@@ -126,6 +126,10 @@ Anirss(config=None, *, config_path=None, qbt_password=None,
 | `qbt_password` | The default qBittorrent client's WebUI password. If `None`, falls back to the `ANIRSS_QBT_PASSWORD` environment variable, then to the password the CLI saved (the mode-600 `qbt.pass` file under `~/.local/state/anirss/`) when the cached session is not enough. An empty password is valid for WebUI setups with auth bypass. Other clients: see [qBittorrent clients](#qbittorrent-clients). |
 | `autostart_qbt` | Start a local qBittorrent when it is not running, as the CLI does. Default `False`: a library should not spawn processes. |
 | `persist_session` | Write the qBittorrent session cookie to the SID cache the CLI shares. Default `False`: the cache is read but not written. |
+| `config_file` | The file `add_endpoint` and `remove_endpoint` write. Defaults to the file the config was read from; `None` with a `config` dict, which makes both raise `ConfigError`. |
+
+anirss ships with no endpoints. A fresh config has an empty list, and every
+call that needs one raises `NoEndpointsError` until the user adds their own.
 
 The constructor does not contact qBittorrent. Login happens lazily on the first
 call that needs it (`subscribe*`, `download*`, `movie`, `upload_torrent`,
@@ -188,7 +192,9 @@ Endpoints and search:
 | --- | --- | --- |
 | `version` (property) | `str` | |
 | `endpoints()` | `list[Endpoint]` | Priority order; the first is the default. |
-| `endpoint(name=None)` | `Endpoint` | `NotFoundError` for an unknown name. |
+| `endpoint(name=None)` | `Endpoint` | `NotFoundError` for an unknown name, `NoEndpointsError` when none is configured. |
+| `add_endpoint(spec)` | `(Endpoint, bool)` | Writes `{name, kind, url, category?, filter?}` into the config file and starts using it, after the others or in place of the one with that name; the bool is whether it replaced one. Any other key, `start` and `stop` included, is a `ValidationError`: on-demand endpoints run commands and stay hand-written. The previous file is kept as `config.toml.bak`; comments and other sections are untouched. |
+| `remove_endpoint(name)` | `None` | Takes the endpoint out of the file and out of use. Its subscriptions keep running. `NotFoundError` for an unknown name. |
 | `search(query, endpoint=None, *, fallback=True, enrich=False)` | `SearchResult` | With `fallback`, an empty or unreachable endpoint falls through to the others in order. Items from a fallback endpoint carry `source`. Raises `FetchError` only when every consulted endpoint was unreachable; zero results is an empty `SearchResult`, not an error. |
 | `fetch_feed(url, *, enrich=False)` | `list[Item]` | Any http(s) RSS URL. |
 | `enrich(items, *, deadline_s=20.0)` | `list[Item]` | Fills unknown `seeders`/`leechers`/`downloads` by scraping trackers (cached). Never raises. Can block about 20 seconds. |
@@ -276,6 +282,7 @@ All in `anirss_lib.errors`:
 | --- | --- | --- |
 | `AnirssError` | `Exception` | Base. Catch this to catch everything anirss raises on purpose. |
 | `ConfigError` | `AnirssError` | Config or an `[[endpoint]]` block is invalid. |
+| `NoEndpointsError` | `ConfigError` | No endpoint is configured, so there is nothing to search. |
 | `ValidationError` | `AnirssError` | A caller-supplied value was rejected (empty query, bad name, bad link scheme, malformed item). |
 | `NotFoundError` | `AnirssError` | Unknown endpoint, subscription, or no results to subscribe to. |
 | `FetchError` | `AnirssError` | A search endpoint could not be fetched or parsed. |
@@ -404,6 +411,7 @@ Every error has the same shape:
 | 403 | `forbidden` | Host-header guard rejected the request. |
 | 404 | `not_found` | Unknown route, unknown endpoint, unknown subscription, no results to subscribe to (`NotFoundError`). |
 | 405 | `method_not_allowed` | Route exists, method does not. |
+| 409 | `no_endpoints` | `NoEndpointsError`: no endpoint is configured yet. Offer the user a way to add one. |
 | 500 | `config_error` | `ConfigError`. |
 | 500 | `internal_error` | Unexpected exception. The message is generic; the traceback goes to `anirss.log`. |
 | 502 | `fetch_error` | `FetchError`: every search endpoint was unreachable, or a refetch/feed fetch failed. |
@@ -477,6 +485,8 @@ Summary:
 | GET | `/qbt/status` | qBittorrent reachability and session state. |
 | GET | `/clients` | Configured qBittorrent clients. |
 | GET | `/endpoints` | Configured search endpoints. |
+| POST | `/endpoints` | Add an endpoint, or replace the one with its name. |
+| DELETE | `/endpoints/{name}` | Remove an endpoint. |
 | GET, POST | `/search` | Search. |
 | POST | `/feed` | Fetch any RSS URL. |
 | POST | `/enrich` | Fill in missing seeder/download stats. |
@@ -502,7 +512,7 @@ No auth. The Host guard still applies.
 curl $BASE/health
 ```
 ```json
-{"ok": true, "version": "0.5.0", "features": ["qbt_clients", "qbt_env_session"]}
+{"ok": true, "version": "0.5.0", "features": ["qbt_clients", "qbt_env_session", "endpoint_writes"]}
 ```
 
 `features` names what this anirss can do. Check for the one you rely on rather
@@ -513,6 +523,7 @@ has no `features` at all). A name keeps its meaning once listed.
 | Feature | Since | Meaning |
 | --- | --- | --- |
 | `qbt_clients` | 0.5.0 | Several qBittorrents in `[[qbittorrent.client]]` blocks, [GET /clients](#get-clients), and `client` on every route that reaches qBittorrent. |
+| `endpoint_writes` | 0.6.0 | [POST /endpoints](#post-endpoints) and [DELETE /endpoints/{name}](#delete-endpointsname), and a fresh config with no endpoints (`409 no_endpoints` until one is added). |
 | `qbt_env_session` | 0.5.0 | An `ANIRSS_QBT_URL` that the config does not name keeps its own session and saved password, so an app that points anirss at another qBittorrent never sends it the configured one's. An anirss without it fails at nothing, it only misbehaves quietly, so an app that sets `ANIRSS_QBT_URL` should refuse one that does not list it. |
 
 Every route that reaches qBittorrent (`/qbt/status`, `/subscriptions` and
@@ -577,6 +588,37 @@ loop). Values of secret-looking query parameters in `url` (`token`, `apikey`,
 `api_key`, `key`, `passkey`, `auth`, `secret`) are replaced with `***`, so the
 URL is safe to display but is not usable as a feed URL. This route does not
 return `category` or `filter`.
+
+#### POST /endpoints
+
+```
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "main", "kind": "nyaa", "url": "https://nyaa-style.example/", "category": "1_0"}' \
+  $BASE/endpoints
+```
+```json
+{"endpoint": {"name": "main", "kind": "nyaa", "url": "https://nyaa-style.example/",
+              "client_side_refine": false},
+ "replaced": false}
+```
+
+Body: `name` (letters, digits, `.`, `_`, `-`), `kind` (`nyaa` or `rss`), `url`
+(http or https; an `rss` URL needs `{query}`), and for `nyaa` optionally
+`category` and `filter`. Any other key is a `400 validation_error`. A new
+endpoint answers `201` and goes after the others; one whose name is in use
+replaces it in place and answers `200` with `replaced: true`. The endpoint in
+the response is redacted like `GET /endpoints`. The change is written to
+`config.toml` at once, keeping its comments and other sections, with the
+previous file as `config.toml.bak`.
+
+#### DELETE /endpoints/{name}
+
+```json
+{"removed": "main"}
+```
+
+`404 not_found` for an unknown name. Subscriptions on the endpoint keep running
+in qBittorrent.
 
 #### GET /search
 

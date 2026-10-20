@@ -166,7 +166,7 @@ def test_health_needs_no_token(env):
     status, body, _ = env.c.get("/health", token=None)
     assert status == 200
     assert body["ok"] is True and body["version"] == env.ani.version
-    assert body["features"] == ["qbt_clients", "qbt_env_session"]
+    assert body["features"] == ["qbt_clients", "qbt_env_session", "endpoint_writes"]
 
 
 @pytest.mark.parametrize("token", [None, "wrong", "to", "tokk"])
@@ -345,7 +345,7 @@ def test_path_outside_api_prefix_404(env):
 
 
 def test_wrong_method_405(env):
-    status, body, _ = env.c.call("POST", server.API + "/endpoints", {})
+    status, body, _ = env.c.call("DELETE", server.API + "/endpoints")
     assert status == 405
     assert body["error"]["type"] == "method_not_allowed"
     status, _, _ = env.c.get("/subscriptions/preview")
@@ -1114,3 +1114,56 @@ def test_parse_serve_args_errors(argv):
 def test_parse_serve_args_rejects_out_of_range_port(port):
     with pytest.raises(ValidationError):
         server._parse_serve_args(["--port", port], CFG)
+
+
+# ---- endpoint writes -----------------------------------------------------
+
+@pytest.fixture
+def writable(env, tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[[endpoint]]\nname = "nyaa"\nkind = "nyaa"\n'
+                    'url = "https://nyaa.example/"\n')
+    env.ani.config_file = path
+    return path
+
+
+def test_post_endpoint_adds_then_replaces(env, writable):
+    ep = {"name": "extra", "kind": "rss", "url": "https://x.example/r?q={query}&apikey=K"}
+    status, body, _ = env.c.post("/endpoints", ep)
+    assert status == 201 and body["replaced"] is False
+    assert body["endpoint"]["url"] == "https://x.example/r?q={query}&apikey=***"
+    status, body, _ = env.c.post("/endpoints", dict(ep, url="https://y.example/r?q={query}"))
+    assert status == 200 and body["replaced"] is True
+    _, body, _ = env.c.get("/endpoints")
+    assert [e["name"] for e in body["endpoints"]] == ["nyaa", "extra"]
+    assert "y.example" in writable.read_text()
+
+
+def test_post_endpoint_refuses_commands(env, writable):
+    before = writable.read_text()
+    status, body, _ = env.c.post("/endpoints", {"name": "x", "kind": "nyaa",
+                                                "url": "https://x.example/", "start": "id"})
+    assert status == 400 and body["error"]["type"] == "validation_error"
+    assert writable.read_text() == before
+
+
+def test_post_endpoint_needs_the_token(env, writable):
+    status, _, _ = env.c.post("/endpoints", {"name": "x", "kind": "nyaa",
+                                             "url": "https://x.example/"}, token=None)
+    assert status == 401
+
+
+def test_delete_endpoint(env, writable):
+    status, body, _ = env.c.delete("/endpoints/nyaa")
+    assert status == 200 and body == {"removed": "nyaa"}
+    assert env.ani.endpoints() == []
+    status, body, _ = env.c.get("/search?q=Frieren")
+    assert status == 409 and body["error"]["type"] == "no_endpoints"
+    status, body, _ = env.c.delete("/endpoints/nyaa")
+    assert status == 404
+
+
+def test_endpoint_writes_without_a_config_file_are_config_errors(env):
+    status, body, _ = env.c.post("/endpoints", {"name": "x", "kind": "nyaa",
+                                                "url": "https://x.example/"})
+    assert status == 500 and body["error"]["type"] == "config_error"

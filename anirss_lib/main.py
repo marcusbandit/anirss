@@ -714,6 +714,8 @@ def _main() -> None:
     # this fires on every keystroke pause inside the live search picker.
     if argv and argv[0] == "--_search-rss":
         endpoint_list = load_endpoints(cfg)
+        if not endpoint_list:
+            return
         rest = argv[1:]
         active = endpoint_list[0]
         if len(rest) >= 2 and rest[0] == "--_endpoint":

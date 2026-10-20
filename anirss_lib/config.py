@@ -175,31 +175,36 @@ movie_path = "~/Downloads/Movies"
 hidden_base = "/srv/media/Hentai"
 
 [search]
-nyaa_url = "https://nyaa.si/"
+# Legacy single-endpoint settings, read only when no [[endpoint]] is defined
+# and nyaa_url is set. New configs list endpoints below instead.
+nyaa_url = ""
 # nyaa category id: "1_0" = Anime (all), "1_2" = English-translated, etc.
 category = "1_0"
 # nyaa filter: "0" = no filter, "1" = no remakes, "2" = trusted only
 filter = "0"
 
 # Search endpoints in priority order; the first is the default at startup.
-# Ctrl-E switches on the fly; `anirss -e <name>` starts on a specific one.
-# A search with zero hits automatically probes the rest in this order.
-# ([search] above is the legacy fallback, used only when no [[endpoint]]
-# is defined.)
-[[endpoint]]
-name = "nyaa"
-kind = "nyaa"   # nyaa-style software: q/c/f params + seeders/size stats
-url = "https://nyaa.si/"
-category = "1_0"
-filter = "0"
-
+# anirss ships with none: add your own here, or over the API
+# (POST /api/v1/endpoints). Ctrl-E switches on the fly; `anirss -e <name>`
+# starts on a specific one. A search with zero hits automatically probes the
+# rest in this order.
+#
+# `kind = "nyaa"` fits sites running nyaa-style software (q/c/f params,
+# seeders and size in the feed):
+#[[endpoint]]
+#name = "main"
+#kind = "nyaa"
+#url = "https://nyaa-style.example/"
+#category = "1_0"
+#filter = "0"
+#
 # `kind = "rss"` fits any site with an RSS search URL. Put {query} where the
 # search terms go; extra fixed params are fine. Stats columns show only when
-# the feed carries them. Uncomment to enable AniRena as a fallback:
+# the feed carries them:
 #[[endpoint]]
-#name = "anirena"
+#name = "fallback"
 #kind = "rss"
-#url = "https://www.anirena.com/rss?q={query}&adult=1"
+#url = "https://rss-search.example/rss?q={query}"
 
 # Any endpoint can override where its downloads land and how they are
 # tagged (save_base, movie_path, tags). An endpoint backed by a local
@@ -209,12 +214,12 @@ filter = "0"
 # are polled by `anirss --refresh-on-demand` (the anirss-on-demand.timer
 # user unit runs it hourly), which starts the service just for that.
 #[[endpoint]]
-#name = "1337x"
+#name = "jackett"
 #kind = "rss"
-#url = "http://127.0.0.1:9117/api/v2.0/indexers/1337x/results/torznab/api?apikey=KEY&t=search&q={query}"
-#start = "systemd-run --user --scope --quiet podman pod start anirss-1337x"
-#stop = "podman pod stop anirss-1337x"
-#ready = "http://127.0.0.1:9117/api/v2.0/indexers/1337x/results/torznab/api?apikey=KEY&t=caps"
+#url = "http://127.0.0.1:9117/api/v2.0/indexers/INDEXER/results/torznab/api?apikey=KEY&t=search&q={query}"
+#start = "systemd-run --user --scope --quiet podman pod start my-jackett"
+#stop = "podman pod stop my-jackett"
+#ready = "http://127.0.0.1:9117/api/v2.0/indexers/INDEXER/results/torznab/api?apikey=KEY&t=caps"
 #timeout = 60
 #save_base = "~/Downloads/TV"
 #movie_path = "~/Downloads/Movies"
@@ -222,16 +227,14 @@ filter = "0"
 
 [bestfit]
 # "[★ Try Best Fit]" in the refine picker auto-pins the best quality profile
-# (group + resolution + source) and refetches nyaa for every matching release.
-# Release groups ranked most-to-least trusted; the first listed wins ties.
-preferred_groups = [
-    "Erai-raws", "SubsPlease", "ASW", "EMBER", "Judas",
-    "Osiris", "Moozzi2", "VCB-Studio", "Kawaiika-Raws",
-]
+# (group + resolution + source) and refetches the endpoint for every matching
+# release. Release groups ranked most-to-least trusted; the first listed wins
+# ties. Empty: groups are not ranked.
+preferred_groups = []
 # Source types best-to-worst. A finished show's BluRay beats its stream; for a
 # currently-airing one only the WEB entries can match anyway. Reorder to taste.
 source_order = ["BluRay", "WEB-DL", "WEB", "WEBRip", "HDTV"]
-# Groups like SubsPlease and Erai-raws never tag their source at all. Rather
+# Some release groups never tag their source at all. Rather
 # than scoring those below every tagged release, assume they are what they
 # almost always are. Set to "" to go back to ranking untagged releases last.
 assumed_source = "WEB"
@@ -412,14 +415,16 @@ def build_config(user_cfg: dict | None = None) -> AnirssConfig:
 
 
 def _finish(cfg: AnirssConfig, user_cfg: dict) -> AnirssConfig:
-    if "endpoint" not in user_cfg:
-        # Legacy config (or fresh defaults): honor [search] by synthesizing
-        # the endpoint list from it, so an edited nyaa_url keeps working.
+    if "endpoint" not in user_cfg and cfg["search"].get("nyaa_url"):
+        # Legacy config written before [[endpoint]]: honor [search] by
+        # synthesizing the endpoint list from it. Fresh defaults leave
+        # nyaa_url empty, so they get no endpoint at all.
         s = cfg["search"]
         cfg["endpoint"] = [{
             "name": "nyaa", "kind": "nyaa", "url": s["nyaa_url"],
             "category": s["category"], "filter": s["filter"],
         }]
+    cfg.setdefault("endpoint", [])
     cfg["downloads"]["save_base"] = os.path.expanduser(cfg["downloads"]["save_base"])
     cfg["downloads"]["movie_path"] = os.path.expanduser(cfg["downloads"]["movie_path"])
     cfg["downloads"]["hidden_base"] = os.path.expanduser(cfg["downloads"]["hidden_base"])

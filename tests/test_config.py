@@ -25,12 +25,15 @@ def test_pick_constants():
     assert types.PICK_SHOW_ALL.kind == "show_all"
 
 
-def test_default_config_has_endpoint_list():
-    eps = config.DEFAULT_CONFIG["endpoint"]
-    assert isinstance(eps, list) and len(eps) == 1
-    assert eps[0]["name"] == "nyaa"
-    assert eps[0]["kind"] == "nyaa"
-    assert eps[0]["url"] == "https://nyaa.si/"
+def test_default_config_has_no_endpoints():
+    assert config.build_config()["endpoint"] == []
+    assert config.DEFAULT_CONFIG["bestfit"]["preferred_groups"] == []
+
+
+def test_default_config_names_no_release_site_or_group():
+    text = config.DEFAULT_CONFIG_TOML.lower()
+    for name in ("nyaa.si", "anirena", "1337x", "erai", "subsplease", "vcb-studio"):
+        assert name not in text, name
 
 
 def test_load_config_synthesizes_endpoint_from_legacy_search(tmp_path, monkeypatch):
@@ -58,11 +61,13 @@ def test_load_config_user_endpoints_win(tmp_path, monkeypatch):
     assert [e["name"] for e in cfg["endpoint"]] == ["anirena"]
 
 
-def test_load_config_missing_file_still_has_endpoint(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "nope" / "config.toml")
+def test_fresh_bootstrap_has_no_endpoints(tmp_path, monkeypatch):
+    path = tmp_path / "nope" / "config.toml"
+    monkeypatch.setattr(config, "CONFIG_PATH", path)
     cfg = config.load_config()
-    assert cfg["endpoint"][0]["name"] == "nyaa"
-    assert cfg["endpoint"][0]["url"] == "https://nyaa.si/"
+    assert path.exists()
+    assert cfg["endpoint"] == []
+    assert config.load_config(path)["endpoint"] == []
 
 
 def test_load_config_takes_the_qbittorrent_address_from_the_environment(tmp_path, monkeypatch):
