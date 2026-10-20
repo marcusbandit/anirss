@@ -12,6 +12,11 @@ class ConfigError(AnirssError):
     """The config (or an [[endpoint]] block) is invalid."""
 
 
+class NoEndpointsError(ConfigError):
+    """No [[endpoint]] is configured, so there is nothing to search. anirss
+    ships with none; the user adds their own."""
+
+
 class ValidationError(AnirssError):
     """A caller-supplied value was rejected (bad name, bad URL, ...)."""
 

@@ -714,6 +714,8 @@ def _main() -> None:
     # this fires on every keystroke pause inside the live search picker.
     if argv and argv[0] == "--_search-rss":
         endpoint_list = load_endpoints(cfg)
+        if not endpoint_list:
+            return
         rest = argv[1:]
         active = endpoint_list[0]
         if len(rest) >= 2 and rest[0] == "--_endpoint":
@@ -741,10 +743,12 @@ def _main() -> None:
     log("INFO", f"=== anirss invoked: argv={sys.argv[1:]} ===")
 
     parsed = parse_cli_args(argv)
-    eps = EndpointState(endpoint_list, parsed.endpoint)
     handled, force_url = _handle_op_flag(parsed.positional, cfg, parsed)
     if handled:
         return
+    # After the op flags: -Q, -Sy and -R only talk to qBittorrent and must
+    # work on a config with no endpoint yet.
+    eps = EndpointState(endpoint_list, parsed.endpoint)
 
     # If -S consumed the URL into force_url, drop -S and the URL from positional.
     if force_url is not None:

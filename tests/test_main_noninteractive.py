@@ -47,3 +47,20 @@ def test_resolve_password_env_wins_over_stdin(monkeypatch):
 def test_resolve_password_neither_returns_none(monkeypatch):
     monkeypatch.delenv("ANIRSS_QBT_PASSWORD", raising=False)
     assert main._resolve_password(password_stdin=False) is None
+
+
+def test_op_flags_run_without_any_endpoint(monkeypatch, tmp_path):
+    """-Q, -Sy and -R only talk to qBittorrent: a fresh config with no
+    endpoint must not stop them."""
+    from anirss_lib import config as config_mod
+    from anirss_lib import main as main_mod
+    cfg = config_mod.build_config({"logging": {"log_path": str(tmp_path / "log")}})
+    assert cfg["endpoint"] == []
+    monkeypatch.setattr(main_mod, "load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr(main_mod, "setup_readline", lambda: None)
+    seen = []
+    monkeypatch.setattr(main_mod, "_handle_op_flag",
+                        lambda argv, c, parsed: (seen.append(argv) or (True, None)))
+    monkeypatch.setattr("sys.argv", ["anirss", "-Q"])
+    main_mod.main()
+    assert seen == [["-Q"]]

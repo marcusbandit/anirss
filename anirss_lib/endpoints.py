@@ -7,11 +7,14 @@ import urllib.parse
 from typing import NamedTuple
 
 from anirss_lib import nyaa
-from anirss_lib.errors import ConfigError, NotFoundError
+from anirss_lib.errors import ConfigError, NoEndpointsError, NotFoundError
 from anirss_lib.types import Item
 
 
 VALID_KINDS = ("nyaa", "rss")
+
+NO_ENDPOINTS = ("no search endpoints configured: add one under [[endpoint]] in "
+                "config.toml, or from an app that uses anirss")
 
 
 class Endpoint(NamedTuple):
@@ -44,7 +47,8 @@ class Endpoint(NamedTuple):
 
 
 def load_endpoints(cfg) -> list[Endpoint]:
-    """Validate cfg["endpoint"] into Endpoint objects. Raises ConfigError."""
+    """Validate cfg["endpoint"] into Endpoint objects. Raises ConfigError.
+    An empty list is valid: anirss ships with no endpoints."""
     out: list[Endpoint] = []
     seen: set[str] = set()
     for i, raw in enumerate(cfg.get("endpoint") or [], start=1):
@@ -91,8 +95,6 @@ def load_endpoints(cfg) -> list[Endpoint]:
                                 str(raw.get("movie_path") or "")),
                             tags=None if tags is None
                             else tuple(str(t) for t in tags)))
-    if not out:
-        raise ConfigError("no [[endpoint]] configured")  # load_config synthesizes, so: unreachable
     return out
 
 
@@ -101,6 +103,8 @@ class EndpointState:
 
     def __init__(self, endpoints: list[Endpoint],
                  active_name: str | None = None) -> None:
+        if not endpoints:
+            raise NoEndpointsError(NO_ENDPOINTS)
         self.endpoints = endpoints
         self.active = endpoints[0]
         if active_name is not None:
