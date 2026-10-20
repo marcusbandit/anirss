@@ -127,3 +127,56 @@ def test_check_spec_refuses(spec):
 
 def test_check_spec_drops_nyaa_keys_from_rss():
     assert check_spec(dict(RSS, category="1_0", filter="2")) == RSS
+
+
+LEGACY = '[search]\nnyaa_url = "https://legacy.example/"\ncategory = "1_2"\n'
+LEGACY_EP = {"name": "nyaa", "kind": "nyaa", "url": "https://legacy.example/",
+             "category": "1_2", "filter": "0"}
+
+
+def test_a_legacy_endpoint_is_written_out_before_an_add(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text(LEGACY)
+    add_endpoint(p, check_spec(RSS), implicit=[LEGACY_EP])
+    assert names(p) == ["nyaa", "fallback"]
+    assert config.load_config(p, bootstrap=False)["search"]["nyaa_url"] == ""
+    assert "# moved to [[endpoint]]: nyaa_url" in p.read_text()
+
+
+def test_removing_a_legacy_endpoint_removes_it_for_good(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text(LEGACY)
+    remove_endpoint(p, "nyaa", implicit=[LEGACY_EP])
+    assert config.load_config(p, bootstrap=False)["endpoint"] == []
+
+
+def test_replacing_a_hand_written_on_demand_endpoint_is_refused(cfg):
+    with pytest.raises(ValidationError, match="start"):
+        add_endpoint(cfg, check_spec({"name": "jackett", "kind": "nyaa",
+                                      "url": "https://x.example/"}))
+    assert cfg.read_text() == HAND_WRITTEN
+
+
+def test_a_symlinked_config_stays_a_symlink(tmp_path):
+    real = tmp_path / "dotfiles" / "config.toml"
+    real.parent.mkdir()
+    real.write_text(HAND_WRITTEN)
+    link = tmp_path / "config.toml"
+    link.symlink_to(real)
+    add_endpoint(link, check_spec(RSS))
+    assert link.is_symlink()
+    assert "fallback" in real.read_text()
+
+
+def test_non_ascii_round_trips(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text("# café\n", encoding="utf-8")
+    url = "https://x.example/rss?q={query}&lang=日本"
+    add_endpoint(p, check_spec({"name": "x", "kind": "rss", "url": url}))
+    assert tomllib.loads(p.read_text(encoding="utf-8"))["endpoint"][0]["url"] == url
+
+
+@pytest.mark.parametrize("bad", ["\x7f", "\x01", "\ud800"])
+def test_control_characters_are_refused(bad):
+    with pytest.raises(ValidationError):
+        check_spec(dict(RSS, url=RSS["url"] + bad))

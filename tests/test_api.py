@@ -1894,3 +1894,22 @@ def test_add_and_remove_endpoint_write_the_file_and_reload(tmp_path):
 def test_a_config_dict_has_no_file_to_write():
     with pytest.raises(ConfigError):
         Anirss(config={}).add_endpoint(dict(NYAA_EP))
+
+
+def test_legacy_search_endpoint_can_be_removed_and_stays_removed(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[search]\nnyaa_url = "https://legacy.example/"\n')
+    ani = Anirss(config_path=path)
+    assert [e.name for e in ani.endpoints()] == ["nyaa"]
+    ani.remove_endpoint("nyaa")
+    assert ani.endpoints() == []
+    assert Anirss(config_path=path).endpoints() == []
+
+
+def test_adding_to_a_legacy_config_keeps_its_endpoint(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('[search]\nnyaa_url = "https://legacy.example/"\n')
+    ani = Anirss(config_path=path)
+    ani.add_endpoint(dict(RSS1_EP))
+    assert [e.name for e in ani.endpoints()] == ["nyaa", "rss1"]
+    assert [e.name for e in Anirss(config_path=path).endpoints()] == ["nyaa", "rss1"]

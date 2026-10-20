@@ -45,6 +45,11 @@ def check_spec(spec: dict) -> dict:
             continue
         if not isinstance(value, str):
             raise ValidationError(f"endpoint `{key}` must be a string")
+        # Control characters and lone surrogates cannot go into a TOML
+        # string as written below, nor into a URL.
+        if any(ord(c) < 32 or ord(c) == 127 or 0xD800 <= ord(c) <= 0xDFFF
+               for c in value):
+            raise ValidationError(f"endpoint `{key}` holds a control character")
         value = value.strip()
         if value:
             clean[key] = value
@@ -80,12 +85,12 @@ def _blocks(lines: list[str]) -> list[tuple[int, int]]:
     return out
 
 
-def _block_name(lines: list[str], span: tuple[int, int]) -> str:
+def _block(lines: list[str], span: tuple[int, int]) -> dict:
     text = "".join(lines[span[0]:span[1] + 1])
     try:
-        return str(tomllib.loads(text)["endpoint"][0].get("name", ""))
+        return dict(tomllib.loads(text)["endpoint"][0])
     except (tomllib.TOMLDecodeError, KeyError, IndexError):
-        return ""
+        return {}
 
 
 def _render(spec: dict) -> list[str]:
@@ -104,6 +109,10 @@ def _endpoints_of(text: str) -> list[dict]:
         raise ConfigError(f"config.toml does not parse: {e}") from e
 
 
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
 def _write(path: Path, new_text: str, expected: list[dict]) -> None:
     got = _endpoints_of(new_text)
     if [{k: e.get(k) for k in WRITABLE_KEYS} for e in got] != \
@@ -112,37 +121,78 @@ def _write(path: Path, new_text: str, expected: list[dict]) -> None:
                           "produce the intended endpoint list")
     if path.exists():
         shutil.copy2(path, path.with_name(path.name + ".bak"))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    # A config.toml that is a symlink (dotfiles) keeps being one: the write
+    # lands on the file it points at.
+    target = path.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(new_text)
-        if path.exists():
-            shutil.copymode(path, tmp)
-        os.replace(tmp, path)
+        if target.exists():
+            shutil.copymode(target, tmp)
+        os.replace(tmp, target)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
 
 
-def add_endpoint(path: Path, spec: dict) -> bool:
-    """Writes `spec` (already through check_spec) into the file at `path`.
-    An endpoint with the same name is replaced in place; a new one goes after
-    the last [[endpoint]] block, or at the end of the file when there is
-    none. True when it replaced one."""
-    old_text = path.read_text() if path.exists() else ""
-    lines = old_text.splitlines(keepends=True)
+_NYAA_URL = re.compile(r"^\s*nyaa_url\s*=")
+
+
+def _retire_legacy_url(lines: list[str]) -> None:
+    """Comments out [search] nyaa_url once the endpoint it stood for is
+    written as a block, so removing that block later really removes it."""
+    in_search = False
+    for i, line in enumerate(lines):
+        if _ANY_HEADER.match(line):
+            in_search = line.strip().split("#")[0].strip() == "[search]"
+        elif in_search and _NYAA_URL.match(line):
+            lines[i] = "# moved to [[endpoint]]: " + line
+
+
+def _load(path: Path, implicit: list[dict] | None
+          ) -> tuple[list[str], list[dict], list[tuple[int, int]]]:
+    """The file's lines, its endpoints and their blocks. A file with no
+    [[endpoint]] block whose config still yields endpoints (`implicit`: the
+    one a legacy [search] section stands for) gets them written out as
+    blocks first, so the edit starts from the list anirss is really using."""
+    lines = _read(path).splitlines(keepends=True)
     if lines and not lines[-1].endswith("\n"):
         lines[-1] += "\n"
-    current = _endpoints_of(old_text)
+    current = _endpoints_of("".join(lines))
+    if not current and implicit:
+        _retire_legacy_url(lines)
+        for spec in implicit:
+            if lines and lines[-1].strip():
+                lines.append("\n")
+            lines.extend(_render(spec))
+        current = _endpoints_of("".join(lines))
     blocks = _blocks(lines)
     if len(blocks) != len(current):
         raise ConfigError("config.toml lists endpoints in a form anirss cannot "
                           "edit safely; change it by hand")
-    names = [_block_name(lines, b) for b in blocks]
+    return lines, current, blocks
+
+
+def add_endpoint(path: Path, spec: dict, implicit: list[dict] | None = None) -> bool:
+    """Writes `spec` (already through check_spec) into the file at `path`.
+    An endpoint with the same name is replaced in place, comments inside its
+    block included; a new one goes after the last [[endpoint]] block, or at
+    the end of the file when there is none. One with keys the API cannot
+    write (an on-demand endpoint's commands, its own paths) is refused rather
+    than stripped. True when it replaced one."""
+    lines, current, blocks = _load(path, implicit)
+    found = [_block(lines, b) for b in blocks]
+    names = [b.get("name") for b in found]
     block = _render(spec)
     if spec["name"] in names:
         i = names.index(spec["name"])
+        extra = sorted(set(found[i]) - set(WRITABLE_KEYS))
+        if extra:
+            raise ValidationError(
+                f"endpoint {spec['name']!r} sets {', '.join(extra)}, which only "
+                f"config.toml can hold; edit it there")
         start, end = blocks[i]
         lines[start:end + 1] = block
         expected = [spec if e.get("name") == spec["name"] else e for e in current]
@@ -161,23 +211,17 @@ def add_endpoint(path: Path, spec: dict) -> bool:
     return replaced
 
 
-def remove_endpoint(path: Path, name: str) -> None:
+def remove_endpoint(path: Path, name: str, implicit: list[dict] | None = None) -> None:
     """Takes the named [[endpoint]] block out of the file at `path`.
     Raises NotFoundError when no endpoint has that name."""
-    old_text = path.read_text() if path.exists() else ""
-    lines = old_text.splitlines(keepends=True)
-    current = _endpoints_of(old_text)
-    blocks = _blocks(lines)
-    if len(blocks) != len(current):
-        raise ConfigError("config.toml lists endpoints in a form anirss cannot "
-                          "edit safely; change it by hand")
-    names = [_block_name(lines, b) for b in blocks]
+    lines, current, blocks = _load(path, implicit)
+    names = [_block(lines, b).get("name") for b in blocks]
     if name not in names:
         raise NotFoundError(f"unknown endpoint {name!r}")
     start, end = blocks[names.index(name)]
     del lines[start:end + 1]
     # The blank line that separated it from what came before goes too.
-    if start > 0 and start <= len(lines) and not lines[start - 1].strip() and \
+    if start > 0 and not lines[start - 1].strip() and \
             (start == len(lines) or not lines[start].strip()):
         del lines[start - 1]
     expected = [e for e in current if e.get("name") != name]

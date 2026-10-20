@@ -21,7 +21,6 @@ import dataclasses
 import os
 import threading
 import time
-import tomllib
 import urllib.parse
 from collections.abc import Callable
 from pathlib import Path
@@ -289,7 +288,7 @@ class Anirss:
         clean = endpoint_config.check_spec(spec)
         path = self._writable_config()
         with self._endpoints_lock:
-            replaced = endpoint_config.add_endpoint(path, clean)
+            replaced = endpoint_config.add_endpoint(path, clean, self._implicit())
             self._reload_endpoints(path)
             return self.endpoint(clean["name"]), replaced
 
@@ -298,7 +297,7 @@ class Anirss:
         subscriptions keep running in qBittorrent."""
         path = self._writable_config()
         with self._endpoints_lock:
-            endpoint_config.remove_endpoint(path, name)
+            endpoint_config.remove_endpoint(path, name, self._implicit())
             self._reload_endpoints(path)
 
     def _writable_config(self) -> Path:
@@ -306,12 +305,19 @@ class Anirss:
             raise ConfigError("this anirss has no config file to write endpoints to")
         return self.config_file
 
+    def _implicit(self) -> list[dict]:
+        """The endpoints in use, as the API could write them: what a legacy
+        [search] section stands for when the file has no [[endpoint]]."""
+        keys = endpoint_config.WRITABLE_KEYS
+        return [{k: str(e[k]) for k in keys if e.get(k)}
+                for e in self.config.get("endpoint") or []]
+
     def _reload_endpoints(self, path: Path) -> None:
-        with path.open("rb") as f:
-            user_cfg = tomllib.load(f)
-        endpoints = load_endpoints({"endpoint": user_cfg.get("endpoint") or []})
-        self.config["endpoint"] = user_cfg.get("endpoint") or []
-        self._endpoints = endpoints
+        # The same reading a restart would do, legacy [search] included, so
+        # the live list never disagrees with the next start.
+        cfg = load_config(path, bootstrap=False, strict=True)
+        self._endpoints = load_endpoints(cfg)
+        self.config["endpoint"] = cfg["endpoint"]
 
     def search(self, query: str, endpoint: str | None = None, *,
                fallback: bool = True, enrich: bool = False) -> SearchResult:
