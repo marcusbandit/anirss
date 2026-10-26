@@ -60,7 +60,7 @@ def resolve_token(configured: str, env: str | None) -> tuple[str, str]:
     if configured:
         return configured, "[server].token"
     try:
-        saved = TOKEN_PATH.read_text().strip()
+        saved = TOKEN_PATH.read_text(encoding="utf-8").strip()
     except OSError:
         saved = ""
     if saved:
@@ -70,7 +70,7 @@ def resolve_token(configured: str, env: str | None) -> tuple[str, str]:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         TOKEN_PATH.touch(mode=0o600, exist_ok=True)
         TOKEN_PATH.chmod(0o600)
-        TOKEN_PATH.write_text(token + "\n")
+        TOKEN_PATH.write_text(token + "\n", encoding="utf-8")
     except OSError as e:
         log("WARN", f"couldn't save API token to {TOKEN_PATH}: {e}")
         return token, "generated (not saved)"

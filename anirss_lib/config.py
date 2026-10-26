@@ -314,7 +314,7 @@ def migrate_config() -> None:
     if not CONFIG_PATH.exists():
         print(f"{C_DIM}no config at {CONFIG_PATH}. Run anirss once to bootstrap.{C_OFF}")
         return
-    user_text = CONFIG_PATH.read_text()
+    user_text = CONFIG_PATH.read_text(encoding="utf-8")
     try:
         user_cfg = tomllib.loads(user_text)
     except tomllib.TOMLDecodeError as e:
@@ -328,7 +328,7 @@ def migrate_config() -> None:
 
     appended = "\n".join(body.rstrip() for _, body in missing)
     new_text = user_text.rstrip() + "\n\n" + appended + "\n"
-    CONFIG_PATH.write_text(new_text)
+    CONFIG_PATH.write_text(new_text, encoding="utf-8")
     print(f"{C_GRN}migrated {CONFIG_PATH}:{C_OFF} appended {len(missing)} new section(s)")
     for name, _ in missing:
         print(f"  {C_CYN}+{C_OFF} [{name}]")
@@ -357,7 +357,7 @@ def load_config(path: Path | None = None, *, bootstrap: bool = True,
     elif bootstrap:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(DEFAULT_CONFIG_TOML)
+            path.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
             print(f"{C_DIM}wrote default config: {path} (edit it!){C_OFF}", file=sys.stderr)
         except OSError as e:
             print(f"{C_YEL}warning: couldn't create {path}: {e}{C_OFF}", file=sys.stderr)

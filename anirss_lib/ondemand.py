@@ -12,7 +12,6 @@ Leases of dead processes are pruned on every release.
 """
 
 import atexit
-import fcntl
 import os
 import signal
 import subprocess
@@ -25,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 from anirss_lib.ansi import C_DIM, C_GRN, C_OFF
+from anirss_lib.compat import child_flags, lock_file, pid_alive, unlock_file
 from anirss_lib.config import STATE_DIR
 from anirss_lib.logging import log
 from anirss_lib.errors import FetchError
@@ -62,11 +62,11 @@ def usable(ep) -> bool:
 def _locked(name: str):
     LEASE_DIR.mkdir(parents=True, exist_ok=True)
     with open(LEASE_DIR / f"{name}.lock", "w") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
+        lock_file(fh)
         try:
             yield
         finally:
-            fcntl.flock(fh, fcntl.LOCK_UN)
+            unlock_file(fh)
 
 
 def _lease(name: str, pid: int | None = None):
@@ -78,13 +78,7 @@ def _marker(name: str):
 
 
 def _pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return pid_alive(pid)
 
 
 def _live_leases(name: str) -> list[int]:
@@ -104,7 +98,8 @@ def _live_leases(name: str) -> list[int]:
 def _run(cmd: str, timeout: float) -> subprocess.CompletedProcess:
     log("INFO", f"on-demand: $ {cmd}")
     return subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                          timeout=timeout, stdin=subprocess.DEVNULL, check=False)
+                          timeout=timeout, stdin=subprocess.DEVNULL, check=False,
+                          **child_flags())
 
 
 def _install_exit_hooks() -> None:
@@ -119,7 +114,10 @@ def _install_exit_hooks() -> None:
     def to_exit(signum, _frame):
         raise SystemExit(128 + signum)
 
-    for sig in (signal.SIGTERM, signal.SIGHUP):
+    # SIGHUP does not exist on Windows.
+    for sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGHUP", None)):
+        if sig is None:
+            continue
         if signal.getsignal(sig) in (signal.SIG_DFL, None):
             signal.signal(sig, to_exit)
 

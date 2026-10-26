@@ -312,7 +312,7 @@ def _load_disk_cache_locked() -> None:
     if _MEM_CACHE:
         return
     try:
-        with open(CACHE_PATH) as f:
+        with open(CACHE_PATH, encoding="utf-8") as f:
             raw = json.load(f)
         for url, entry in raw.get("urls", {}).items():
             stats_ = tuple(entry[1:4])
@@ -334,7 +334,7 @@ def _save_disk_cache_locked() -> None:
     try:
         os.makedirs(CACHE_PATH.parent, exist_ok=True)
         tmp = f"{CACHE_PATH}.{os.getpid()}.tmp"
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"version": 1, "urls": fresh}, f)
         os.replace(tmp, CACHE_PATH)
     except OSError as e:

@@ -16,6 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from anirss_lib.ansi import C_BLD, C_CYN, C_GRN, C_OFF, C_RED, C_YEL
+from anirss_lib.compat import detached_flags
 from anirss_lib.config import PASS_PATH, QbtConfig, SID_PATH, STATE_DIR
 from anirss_lib.errors import AnirssError, QbtAuthError, QbtError
 from anirss_lib.logging import log
@@ -180,7 +181,7 @@ def _save_sid(jar: http.cookiejar.CookieJar, client: str = "") -> None:
             STATE_DIR.chmod(0o700)
         except OSError:
             pass
-        path.write_text(f"{pair[0]}\t{pair[1]}")
+        path.write_text(f"{pair[0]}\t{pair[1]}", encoding="utf-8")
         path.chmod(0o600)
         log("INFO", f"saved SID ({pair[0]}) to {path}")
     except OSError as e:
@@ -190,7 +191,7 @@ def _save_sid(jar: http.cookiejar.CookieJar, client: str = "") -> None:
 def _load_sid(client: str = "") -> tuple[str, str] | None:
     """Return (cookie_name, value) or None. Legacy format (bare value) is read as ('SID', value)."""
     try:
-        raw = _client_file(SID_PATH, client).read_text().strip()
+        raw = _client_file(SID_PATH, client).read_text(encoding="utf-8").strip()
     except OSError:
         return None
     if not raw:
@@ -224,7 +225,7 @@ def _save_password(password: str, client: str = "") -> bool:
             STATE_DIR.chmod(0o700)
         except OSError:
             pass
-        path.write_text(password)
+        path.write_text(password, encoding="utf-8")
         path.chmod(0o600)
         log("INFO", f"saved qBittorrent password to {path}")
         return True
@@ -237,7 +238,7 @@ def _load_password(client: str = "") -> str | None:
     """Return the saved password, or None if there isn't one. Tolerates a
     trailing newline so `echo pw > qbt.pass` also works."""
     try:
-        raw = _client_file(PASS_PATH, client).read_text()
+        raw = _client_file(PASS_PATH, client).read_text(encoding="utf-8")
     except OSError:
         return None
     return raw.rstrip("\n") or None
@@ -374,7 +375,7 @@ def _launch_qbt(cmd: list[str]) -> None:
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        **detached_flags(),
     )
 
 
