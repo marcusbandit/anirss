@@ -512,7 +512,7 @@ No auth. The Host guard still applies.
 curl $BASE/health
 ```
 ```json
-{"ok": true, "version": "0.6.0", "features": ["qbt_clients", "qbt_env_session", "endpoint_writes"]}
+{"ok": true, "version": "0.6.1", "features": ["qbt_clients", "qbt_env_session", "endpoint_writes"]}
 ```
 
 `features` names what this anirss can do. Check for the one you rely on rather

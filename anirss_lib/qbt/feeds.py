@@ -12,7 +12,8 @@ def write_feed_cache(names: list[str]) -> None:
     try:
         _cfg.STATE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = _cfg.FEEDS_CACHE_PATH.with_suffix(".tmp")
-        tmp.write_text("".join(name + "\n" for name in sorted(names, key=str.lower)))
+        tmp.write_text("".join(name + "\n" for name in sorted(names, key=str.lower)),
+                       encoding="utf-8")
         tmp.replace(_cfg.FEEDS_CACHE_PATH)
         log("INFO", f"wrote feed cache ({len(names)} names) to {_cfg.FEEDS_CACHE_PATH}")
     except OSError as e:
@@ -21,7 +22,7 @@ def write_feed_cache(names: list[str]) -> None:
 
 def read_feed_cache() -> list[str]:
     try:
-        return [line for line in _cfg.FEEDS_CACHE_PATH.read_text().splitlines() if line]
+        return [line for line in _cfg.FEEDS_CACHE_PATH.read_text(encoding="utf-8").splitlines() if line]
     except OSError:
         return []
 

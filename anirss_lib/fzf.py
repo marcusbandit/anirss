@@ -219,7 +219,7 @@ def fzf_search_prompt(prompt_label: str, *, default: str = "",
         return q, "ctrl-e"
     if out.expect_key == "enter" and q:
         try:
-            with history_file.open("a") as f:
+            with history_file.open("a", encoding="utf-8") as f:
                 f.write(q + "\n")
         except OSError:
             pass

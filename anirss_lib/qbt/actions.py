@@ -33,7 +33,9 @@ def validate_name(name: str) -> str:
 
 
 def _norm_path(p: str) -> str:
-    return os.path.normpath(os.path.expanduser(p)).rstrip("/")
+    norm = os.path.normpath(os.path.expanduser(p))
+    # On Windows both separators end a path (C:\\anime\\ and C:/anime/).
+    return norm.rstrip("/\\" if os.name == "nt" else "/")
 
 
 def _human_bytes(n: int) -> str:
@@ -74,7 +76,7 @@ def _safe_rmtree(path: str) -> None:
     home = _norm_path(str(Path.home()))
     forbidden = {"", "/", home, _norm_path(str(STATE_DIR)),
                  _norm_path(str(CONFIG_PATH.parent))}
-    if p in forbidden or len(p) <= 1:
+    if p in forbidden or len(p) <= 1 or os.path.splitdrive(p)[1] == "":
         raise ValidationError(f"refusing to rmtree suspicious path: {path!r}")
     try:
         shutil.rmtree(p)

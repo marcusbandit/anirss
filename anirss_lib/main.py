@@ -19,6 +19,7 @@ from anirss_lib.cli.pickers import (
 from anirss_lib.cli.urls import (
     UrlKind, classify_url, endpoint_hosts, extract_nyaa_query,
 )
+from anirss_lib.compat import utf8_stdio
 from anirss_lib.config import (
     AnirssConfig, CONFIG_PATH, load_config, migrate_config,
 )
@@ -696,6 +697,7 @@ def main() -> None:
 def _main() -> None:
     # Before anything else, so `ps`/`htop`/`pidof` never show a bare "python3".
     proctitle.apply()
+    utf8_stdio()
 
     cfg = load_config()
     responsive.set_display(cfg["display"])

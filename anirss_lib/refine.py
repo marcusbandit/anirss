@@ -199,13 +199,15 @@ def refine(initial_query: str, items: list[Item], state: EndpointState,
     log("INFO", f"refine start: {query!r} ({len(items)} items)")
     query, selected = auto_resolution(query, items)
 
-    _PREV_WINCH_HANDLER = signal.signal(signal.SIGWINCH, _on_sigwinch)
+    winch = getattr(signal, "SIGWINCH", None)   # not on Windows
+    if winch is not None:
+        _PREV_WINCH_HANDLER = signal.signal(winch, _on_sigwinch)
     try:
         return _refine_loop(query, selected, state, bestfit_cfg)
     finally:
         _CURRENT_FRAME = None
-        if _PREV_WINCH_HANDLER is not None:
-            signal.signal(signal.SIGWINCH, _PREV_WINCH_HANDLER)
+        if winch is not None and _PREV_WINCH_HANDLER is not None:
+            signal.signal(winch, _PREV_WINCH_HANDLER)
         _PREV_WINCH_HANDLER = None
 
 

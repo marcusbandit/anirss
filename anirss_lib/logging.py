@@ -16,7 +16,7 @@ def init_log(log_path: str) -> None:
     global _LOG_FILE
     try:
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        _LOG_FILE = open(log_path, "a", buffering=1)  # line-buffered
+        _LOG_FILE = open(log_path, "a", buffering=1, encoding="utf-8")  # line-buffered
     except OSError:
         _LOG_FILE = None
 

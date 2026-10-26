@@ -64,4 +64,4 @@ State:  ~/.local/state/anirss/   (feeds.txt cache, qbt.sid session cookie, anirs
                                   a named client's session is qbt-<name>.sid)
 """
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
