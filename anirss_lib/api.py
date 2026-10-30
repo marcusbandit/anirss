@@ -18,6 +18,7 @@ surface; everything else in anirss_lib is internal to the CLI.
 """
 
 import dataclasses
+import ntpath
 import os
 import threading
 import time
@@ -200,6 +201,17 @@ def _check_link(link: object) -> str | None:
     # qB takes `urls` newline-separated, so whitespace left inside one link
     # (a magnet, or a host) would smuggle in a second, unchecked one.
     return None if any(c.isspace() for c in link) else link
+
+
+def _check_save_path(path: str) -> str:
+    """An absolute folder, as the client names it, with no control
+    characters. Raises ValidationError otherwise."""
+    path = (path or "").strip()
+    if not path or not (path.startswith("/") or ntpath.isabs(path)):
+        raise ValidationError("save_path must be an absolute path")
+    if any(ord(c) < 32 or ord(c) == 127 for c in path):
+        raise ValidationError(f"invalid save_path {path!r}")
+    return path
 
 
 def _check_links(links: list[str]) -> list[str]:
@@ -547,20 +559,25 @@ class Anirss:
             q, url, name, self._save_base(hidden, client), tags=self._tags(client)), client)
 
     def download(self, links: list[str], *, name: str, hidden: bool = False,
-                 client: str | None = None) -> AddResult:
-        """Add magnet / http(s) .torrent links now, into save_base/<name>."""
+                 client: str | None = None, save_path: str | None = None) -> AddResult:
+        """Add magnet / http(s) .torrent links now, into save_base/<name>, or
+        into `save_path` when given: a show's own folder, wherever it is."""
         links = _check_links(links)
-        save_path = os.path.join(self._save_base(hidden, client), validate_name(name))
+        if save_path is not None:
+            save_path = _check_save_path(save_path)
+        else:
+            save_path = os.path.join(self._save_base(hidden, client), validate_name(name))
         return self._add_links(links, save_path, client)
 
     def download_items(self, items: list[Item], *, name: str | None = None,
-                       hidden: bool = False, client: str | None = None) -> AddResult:
+                       hidden: bool = False, client: str | None = None,
+                       save_path: str | None = None) -> AddResult:
         """download() for search results; `name` defaults to the show name."""
         if not items:
             raise ValidationError("no items given")
         return self.download([it.link for it in items],
                              name=self._name_for(name, items, "anirss"),
-                             hidden=hidden, client=client)
+                             hidden=hidden, client=client, save_path=save_path)
 
     def movie(self, link: str, *, client: str | None = None) -> AddResult:
         """Add one torrent straight into [downloads].movie_path (no subdir)."""

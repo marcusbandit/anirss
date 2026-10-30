@@ -465,14 +465,16 @@ class Handler(BaseHTTPRequestHandler):
         b = self._json_body()
         hidden = _bool(b.get("hidden"))
         client = _str(b, "client")
+        save_path = _str(b, "save_path")
         items = _items(b, required=False)
         if items is not None:
             res = self.ani.download_items(items, name=_str(b, "name"), hidden=hidden,
-                                          client=client)
+                                          client=client, save_path=save_path)
         else:
             links = _str_list(b, "links")
-            name = _str(b, "name", required=True) or ""
-            res = self.ani.download(links or [], name=name, hidden=hidden, client=client)
+            name = _str(b, "name", required=save_path is None) or ""
+            res = self.ani.download(links or [], name=name, hidden=hidden, client=client,
+                                    save_path=save_path)
         return 201, to_jsonable(res)
 
     def h_movie(self, q, _):
