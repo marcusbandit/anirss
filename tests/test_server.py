@@ -868,6 +868,26 @@ def test_download_items_default_name(env):
     assert body["save_path"] == os.path.join(str(env.save), "Frieren")
 
 
+def test_download_into_a_save_path(env, tmp_path):
+    show = str(tmp_path / "TV" / "Avatar Seven Havens")
+    items = [{"title": "Avatar.Seven.Havens.S01E11.1080p.x265-ELiTE", "link": MAGNET}]
+    status, body, _ = env.c.post("/downloads", {"items": items, "name": "Avatar Seven Havens",
+                                               "save_path": show})
+    assert status == 201 and body["save_path"] == show
+    (add,) = env.qbt.posted("/api/v2/torrents/add")
+    assert add["savepath"] == show
+    status, _, _ = env.c.post("/downloads", {"links": [MAGNET], "save_path": show})
+    assert status == 201
+
+
+@pytest.mark.parametrize("bad", ["relative/dir", "", "/a\nb"])
+def test_download_save_path_must_be_absolute(env, bad):
+    status, _, _ = env.c.post("/downloads", {"links": [MAGNET], "name": "n",
+                                             "save_path": bad})
+    assert status == 400
+    assert env.qbt.posts == []
+
+
 def test_download_items_empty_400(env):
     status, _, _ = env.c.post("/downloads", {"items": []})
     assert status == 400
