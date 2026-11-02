@@ -125,6 +125,22 @@ class EndpointState:
         return self.active
 
 
+# Tags results a filtered nyaa endpoint found only with its filter off, after the
+# endpoint's name: the results list heads them with it, and a subscription to them
+# keeps the filter off too.
+ALL_UPLOADS = ": all uploads"
+
+
+def unfiltered(ep: Endpoint) -> Endpoint:
+    """`ep` with its nyaa filter off (every upload, trusted or not)."""
+    return ep._replace(filter="0")
+
+
+def found_unfiltered(ep: Endpoint, items: list[Item]) -> bool:
+    """Whether `items` are what `ep` found only with its filter off."""
+    return bool(items) and all(it.source.endswith(ALL_UPLOADS) for it in items)
+
+
 def search_url(ep: Endpoint, query: str) -> str:
     if ep.kind == "nyaa":
         qs = urllib.parse.urlencode({
@@ -202,6 +218,8 @@ def subscription_feed(ep: Endpoint, query: str, items: list[Item]
     episode downloads once. Every other endpoint keeps the feed_url()
     behavior with an empty mustContain."""
     from anirss_lib import erai
+    if ep.kind == "nyaa" and found_unfiltered(ep, items):
+        ep = unfiltered(ep)
     if erai.is_erai(ep):
         per_show = erai.resolve_show_feed(ep, items)
         positive, excluded = split_exclusions(query)
@@ -244,6 +262,8 @@ def filter_excluded(items: list[Item], terms: list[str]) -> list[Item]:
 
 def fetch_items(ep: Endpoint, query: str, *, boot: bool = True) -> list[Item]:
     """Fetch `query` from `ep`. Raises nyaa.FetchError on network/parse errors.
+    A nyaa endpoint whose filter finds nothing is asked again unfiltered, and
+    those results carry `source` "<name>: all uploads".
     An on-demand endpoint is started first when `boot`; without it, one
     that isn't running already fails fast instead of starting."""
     from anirss_lib import ondemand
@@ -253,7 +273,15 @@ def fetch_items(ep: Endpoint, query: str, *, boot: bool = True) -> list[Item]:
         elif not ondemand.usable(ep):
             raise nyaa.FetchError(f"{ep.name}: not running")
     if ep.kind == "nyaa":
-        return nyaa.fetch_rss(search_url(ep, query), ep.name, ep.timeout)
+        items = nyaa.fetch_rss(search_url(ep, query), ep.name, ep.timeout)
+        if items or ep.filter == "0":
+            return items
+        # A show nobody trusted has uploaded (or that trusted groups name
+        # differently) would vanish behind "trusted only": ask again for every
+        # upload, and say so on each result.
+        items = nyaa.fetch_rss(search_url(unfiltered(ep), query), ep.name,
+                               ep.timeout)
+        return [it._replace(source=ep.name + ALL_UPLOADS) for it in items]
     from anirss_lib import erai
     positive, excluded = split_exclusions(query)
     positive, quality = _erai_split(ep, positive)
@@ -293,7 +321,8 @@ def probe_fallback(state: EndpointState, query: str, fetch=None
             # Tag where these came from so the results list can render a
             # source-header row above them (the search didn't ask for this
             # endpoint, it fell back to it).
-            return [it._replace(source=ep.name) for it in items], notes
+            return [it._replace(source=it.source or ep.name)
+                    for it in items], notes
         notes.append(f"{ep.name}: 0")
     return [], notes
 

@@ -1,3 +1,5 @@
+import urllib.parse
+
 import pytest
 
 from anirss_lib import endpoints
@@ -177,3 +179,44 @@ def test_probe_fallback_all_fail_keeps_active():
     items, notes = endpoints.probe_fallback(st, "q", fetch=fake_fetch)
     assert items == [] and st.active is NYAA
     assert notes == ["anirena: unreachable", "tosho: 0"]
+
+
+def _feed(by_filter):
+    """A fake nyaa.fetch_rss answering by the f= parameter of the URL."""
+    urls = []
+
+    def fetch(url, name, timeout):
+        urls.append(url)
+        f = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["f"][0]
+        return list(by_filter.get(f, []))
+    return fetch, urls
+
+
+TRUSTED = NYAA._replace(filter="2")
+SHOW = Item("[denisplay] Seitokai ni mo Ana wa Aru! - 05 [1080p]", "l")
+
+
+def test_a_filtered_search_with_nothing_asks_again_for_every_upload(monkeypatch):
+    fetch, urls = _feed({"0": [SHOW]})
+    monkeypatch.setattr(endpoints.nyaa, "fetch_rss", fetch)
+    items = endpoints.fetch_items(TRUSTED, "Seitokai ni mo Ana wa Aru")
+    assert [it.title for it in items] == [SHOW.title]
+    assert items[0].source == "nyaa: all uploads"
+    assert ["f=2" in urls[0], "f=0" in urls[1]] == [True, True]
+    # Subscribing to those results keeps the filter off, or the rule finds nothing.
+    url, _, _ = endpoints.subscription_feed(TRUSTED, "Seitokai", items)
+    assert "f=0" in url
+
+
+def test_a_filtered_search_with_results_or_no_filter_asks_once(monkeypatch):
+    fetch, urls = _feed({"2": [SHOW], "0": [SHOW, SHOW]})
+    monkeypatch.setattr(endpoints.nyaa, "fetch_rss", fetch)
+    items = endpoints.fetch_items(TRUSTED, "Seitokai")
+    assert len(items) == 1 and items[0].source == "" and len(urls) == 1
+    url, _, _ = endpoints.subscription_feed(TRUSTED, "Seitokai", items)
+    assert "f=2" in url
+
+    fetch, urls = _feed({})
+    monkeypatch.setattr(endpoints.nyaa, "fetch_rss", fetch)
+    assert endpoints.fetch_items(NYAA._replace(filter="0"), "x") == []
+    assert len(urls) == 1

@@ -357,7 +357,8 @@ class Anirss:
                           "count": len(items), "error": None})
             if items:
                 if i > 0:
-                    items = [it._replace(source=ep.name) for it in items]
+                    items = [it._replace(source=it.source or ep.name)
+                             for it in items]
                 if enrich:
                     items = self.enrich(items)
                 return SearchResult(query, ep.name, items, tried)
