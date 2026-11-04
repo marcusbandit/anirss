@@ -125,7 +125,7 @@ def test_fetch_items_erai_searches_clean_and_filters_quality(monkeypatch):
 
 
 def test_subscription_feed_erai_fallback_puts_quality_in_must(monkeypatch):
-    monkeypatch.setattr(erai, "resolve_show_feed",
+    monkeypatch.setattr(erai, "probe_show_feed",
                         lambda ep, items, fetch=None: None)
     url, must, excluded = endpoints.subscription_feed(
         ERAI_EP, "Ranma 1080p WEB-DL -hevc", [])
@@ -189,8 +189,9 @@ def test_resolve_show_feed_without_page_makes_no_request():
 
 def test_subscription_feed_erai_uses_per_show_and_must_contain(monkeypatch):
     monkeypatch.setattr(
-        erai, "resolve_show_feed",
-        lambda ep, items, fetch=None: "https://www.erai-raws.info/anime-list/x/feed/?res=1080p")
+        erai, "probe_show_feed",
+        lambda ep, items, fetch=None: (
+            "https://www.erai-raws.info/anime-list/x/feed/?res=1080p", []))
     url, must, excluded = endpoints.subscription_feed(
         ERAI_EP, "Gaikotsu 1080p CR WEB-DL -hevc", _erai_items())
     assert url == "https://www.erai-raws.info/anime-list/x/feed/?res=1080p"
@@ -199,15 +200,44 @@ def test_subscription_feed_erai_uses_per_show_and_must_contain(monkeypatch):
 
 
 def test_subscription_feed_must_contain_drops_poster_and_quotes(monkeypatch):
-    monkeypatch.setattr(erai, "resolve_show_feed",
-                        lambda ep, items, fetch=None: "https://e/f")
+    monkeypatch.setattr(erai, "probe_show_feed",
+                        lambda ep, items, fetch=None: ("https://e/f", []))
     _, must, _ = endpoints.subscription_feed(
         ERAI_EP, '[Erai-raws] Show "Multi Subs" 1080p', [])
     assert must == "Show Multi Subs 1080p"
 
 
+# The per-show feed for Kyouran Reijou Nia Liston: its titles never name the
+# group, so the `erai` its rule carried (#22) matched nothing for weeks.
+NIA_SHOWN = [Item(f"Kyouran Reijou Nia Liston - 0{n} [1080p HIDIVE WEB-DL AVC "
+                  "AAC][us][Airing]", "l", resolution="1080p", linktype="Torrent")
+             for n in (1, 2)]
+
+
+def test_subscription_feed_drops_words_the_show_feed_never_carries(monkeypatch):
+    monkeypatch.setattr(erai, "probe_show_feed",
+                        lambda ep, items, fetch=None: ("https://e/f", NIA_SHOWN))
+    _, must, _ = endpoints.subscription_feed(
+        ERAI_EP, "Kyouran Reijou Nia Liston 1080p erai 1080p", [])
+    assert must == "Kyouran Reijou Nia Liston 1080p"
+
+
+def test_rule_words_keeps_metadata_only_words_and_each_word_once():
+    # "Torrent" is the raw title's linktype prefix, which qB matches on.
+    assert erai.rule_words("Nia nia Torrent HIDIVE", NIA_SHOWN) == \
+        "Nia Torrent HIDIVE"
+
+
+def test_probe_show_feed_returns_the_items_it_found():
+    found = [Item("x", "l")]
+    url, shown = erai.probe_show_feed(
+        ERAI_EP, _erai_items(), fetch=lambda url, name="feed": found)
+    assert "/anime-list/" in url
+    assert shown == found
+
+
 def test_subscription_feed_erai_falls_back_to_search_feed(monkeypatch):
-    monkeypatch.setattr(erai, "resolve_show_feed",
+    monkeypatch.setattr(erai, "probe_show_feed",
                         lambda ep, items, fetch=None: None)
     url, must, excluded = endpoints.subscription_feed(
         ERAI_EP, "gaikotsu -hevc", [])
@@ -253,8 +283,8 @@ def test_variant_exclusions_respects_a_picked_variant():
 
 def test_subscription_feed_per_show_downloads_one_release_per_episode(
         monkeypatch):
-    monkeypatch.setattr(erai, "resolve_show_feed",
-                        lambda ep, items, fetch=None: "https://e/f")
+    monkeypatch.setattr(erai, "probe_show_feed",
+                        lambda ep, items, fetch=None: ("https://e/f", []))
     _, must, excluded = endpoints.subscription_feed(
         ERAI_EP, "kyoufu 1080p", [])
     assert excluded == ["HEVC"]
@@ -264,8 +294,8 @@ def test_subscription_feed_per_show_downloads_one_release_per_episode(
 
 
 def test_subscription_feed_hevc_query_keeps_only_the_encode(monkeypatch):
-    monkeypatch.setattr(erai, "resolve_show_feed",
-                        lambda ep, items, fetch=None: "https://e/f")
+    monkeypatch.setattr(erai, "probe_show_feed",
+                        lambda ep, items, fetch=None: ("https://e/f", []))
     _, must, excluded = endpoints.subscription_feed(
         ERAI_EP, "kyoufu 1080p HEVC", [])
     assert excluded == []
@@ -275,7 +305,7 @@ def test_subscription_feed_hevc_query_keeps_only_the_encode(monkeypatch):
 
 
 def test_subscription_feed_search_fallback_also_drops_the_encode(monkeypatch):
-    monkeypatch.setattr(erai, "resolve_show_feed",
+    monkeypatch.setattr(erai, "probe_show_feed",
                         lambda ep, items, fetch=None: None)
     _, _, excluded = endpoints.subscription_feed(ERAI_EP, "Ranma 1080p", [])
     assert excluded == ["HEVC"]
