@@ -190,9 +190,10 @@ def subscription_feed(ep: Endpoint, query: str, items: list[Item]
     """(feed_url, mustContain, excluded) to persist as a qB subscription.
 
     Erai endpoints subscribe to the per-show anime-list feed when the slug
-    can be resolved from `items` (see erai.resolve_show_feed); the positive
+    can be resolved from `items` (see erai.probe_show_feed); the positive
     query terms then move into the rule's mustContain since the per-show URL
-    no longer encodes the search. Quoted phrases are unwrapped and poster
+    no longer encodes the search, minus any repeat and any word no title in
+    that feed carries (erai.rule_words). Quoted phrases are unwrapped and poster
     fields dropped: qB matches whitespace-separated tokens against the raw
     feed titles, which carry no [group] poster. When the slug can't be
     resolved, the search feed is used with only the searchable terms on the
@@ -203,14 +204,12 @@ def subscription_feed(ep: Endpoint, query: str, items: list[Item]
     behavior with an empty mustContain."""
     from anirss_lib import erai
     if erai.is_erai(ep):
-        per_show = erai.resolve_show_feed(ep, items)
+        probe = erai.probe_show_feed(ep, items)
         positive, excluded = split_exclusions(query)
         excluded += erai.variant_exclusions(query)
-        if per_show:
-            must = " ".join(
-                field.strip('"') for field in FIELD_RE.findall(positive)
-                if not field.startswith("["))
-            return per_show, must, excluded
+        if probe:
+            per_show, shown = probe
+            return per_show, erai.rule_words(positive, shown), excluded
         positive, quality = _erai_split(ep, positive)
         return search_url(ep, positive), " ".join(quality), excluded
     url, excluded = feed_url(ep, query)

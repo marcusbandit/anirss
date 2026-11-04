@@ -186,11 +186,12 @@ def per_show_feed_url(ep: Endpoint, slug: str) -> str:
     return f"{origin}/anime-list/{slug}/feed/?{urllib.parse.urlencode(params)}"
 
 
-def resolve_show_feed(ep: Endpoint, items: list[Item], fetch=None) -> str | None:
-    """Per-show feed URL for the show `items` belong to, or None to make the
-    caller fall back to the search feed. Costs at most one request: the first
-    item with a recognizable post URL decides. `fetch` is injectable for
-    tests."""
+def probe_show_feed(ep: Endpoint, items: list[Item], fetch=None
+                    ) -> tuple[str, list[Item]] | None:
+    """(per-show feed URL, the items the probe found) for the show `items`
+    belong to, or None to make the caller fall back to the search feed.
+    Costs at most one request: the first item with a recognizable post URL
+    decides. `fetch` is injectable for tests."""
     fetch = fetch or nyaa.fetch_rss
     for item in items:
         match = _POST_RE.search(item.page)
@@ -207,7 +208,36 @@ def resolve_show_feed(ep: Endpoint, items: list[Item], fetch=None) -> str | None
             return None
         if found:
             log("INFO", f"erai per-show feed for {slug!r}: {len(found)} item(s)")
-            return url
+            return url, found
         log("WARN", f"erai slug {slug!r}: empty probe, using the search feed")
         return None
     return None
+
+
+def resolve_show_feed(ep: Endpoint, items: list[Item], fetch=None) -> str | None:
+    """The per-show feed URL alone (see probe_show_feed)."""
+    probe = probe_show_feed(ep, items, fetch=fetch)
+    return probe[0] if probe else None
+
+
+def rule_words(positive: str, shown: list[Item]) -> str:
+    """mustContain for a per-show subscription: the query's positive words,
+    quotes unwrapped, poster fields dropped, each word once. qB ANDs every
+    word against the feed titles, so a word no title in the per-show feed
+    carries ("erai": the feed is the group already, its titles never name
+    it) would stop the rule from ever matching. Such a word is dropped,
+    judged against `shown`, the items the probe found. An empty `shown`
+    drops nothing."""
+    words: list[str] = []
+    for field in FIELD_RE.findall(positive):
+        if field.startswith("["):
+            continue
+        word = field.strip('"')
+        if not word or any(w.lower() == word.lower() for w in words):
+            continue
+        if shown and not any(matches_token(it, word) for it in shown):
+            log("WARN", f"erai rule drops {word!r}: no title in the "
+                        f"show feed carries it")
+            continue
+        words.append(word)
+    return " ".join(words)
