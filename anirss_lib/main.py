@@ -275,7 +275,10 @@ def _handle_op_flag(argv: list[str], cfg: AnirssConfig, parsed: ParsedArgs
     op, mods = op_parsed
     rest = argv[1:]
     if op == "Q":
-        cmd_query(cfg["qbittorrent"], json_format=("j" in mods))
+        client = cfg["qbittorrent"]
+        cmd_query(client, json_format=("j" in mods),
+                  own_bases=[download_root(cfg, client, "save_base"),
+                             download_root(cfg, client, "hidden_base")])
         return True, None
     if op == "S" and "y" in mods:
         cmd_sync(cfg["qbittorrent"])
@@ -298,7 +301,9 @@ def _handle_op_flag(argv: list[str], cfg: AnirssConfig, parsed: ParsedArgs
                    drop_files=("n" in mods),
                    noconfirm=parsed.noconfirm,
                    save_base=save_base,
-                   local_files=local_files(client))
+                   local_files=local_files(client),
+                   own_bases=[download_root(cfg, client, "save_base"),
+                              download_root(cfg, client, "hidden_base")])
         return True, None
     if op == "T":
         if not rest:

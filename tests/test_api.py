@@ -968,7 +968,8 @@ def test_subscribe_nyaa_registers_feed_and_rule(make):
     assert rule["savePath"] == res.save_path
     assert rule["affectedFeeds"] == [res.feed_url]
     assert rule["torrentParams"] == {"save_path": res.save_path,
-                                     "use_auto_tmm": False, "tags": ["Anime"]}
+                                     "use_auto_tmm": False,
+                                     "tags": ["Anime", "anirss:Frieren"]}
     assert len(e.logins.calls) == 1
     assert e.logins.calls[0]["autostart"] is False
     assert e.logins.calls[0]["notify"] is None
@@ -1037,14 +1038,15 @@ def test_subscribe_same_feed_keeps_name(make):
     assert e.ani.subscribe("Frieren", endpoint="rss1", items=_frieren(1)).name == "Frieren"
 
 
-def test_subscribe_tags_cleaned_and_empty_tags_omit_params(make):
+def test_subscribe_tags_cleaned_and_an_untagged_client_tags_only_the_rule(make):
     e = make(config={"qbittorrent": {"tags": ["a", " b,c ", "a", ""]}})
     res = e.ani.subscribe("Frieren", items=_frieren(1))
     assert res.tags == ["a", "b", "c"]
-    assert _setrule(e.qbt)["torrentParams"]["tags"] == ["a", "b", "c"]
+    assert _setrule(e.qbt)["torrentParams"]["tags"] == ["a", "b", "c", "anirss:Frieren"]
     e = make(config={"qbittorrent": {"tags": []}})
     res = e.ani.subscribe("Frieren", items=_frieren(1))
-    assert res.tags == [] and "torrentParams" not in _setrule(e.qbt)
+    assert res.tags == []
+    assert _setrule(e.qbt)["torrentParams"]["tags"] == ["anirss:Frieren"]
 
 
 def test_subscribe_validates_before_logging_in(make):
@@ -1766,13 +1768,101 @@ def test_execute_remove_notifies_and_confine_to_is_optional(tmp_path):
     qbt = FakeQbt(rules={"Show": {"affectedFeeds": ["http://feed"], "savePath": str(d)}},
                   feed_tree={"Show": {"url": "http://feed"}})
     plans = actions.plan_remove(qbt, ["Show"], drop_torrents=False, drop_files=True,
-                                save_base=str(tmp_path))
+                                save_base=str(tmp_path / "anywhere"))
     notes: list[str] = []
     actions.execute_remove(qbt, plans, drop_torrents=False, drop_files=True,
                            notify=notes.append)         # confine_to=None: allowed
     assert not d.exists()
     assert notes == ["removed feed Show", "removed rule Show",
                      f"deleted files at {d}"]
+
+
+# A rule saving into a show's own folder (#38): the folder holds episodes the rule never
+# downloaded and torrents of other rules, so only the torrents carrying the rule's own tag
+# are its, and the folder is never the rule's to delete.
+
+
+def _shared_env(make, tmp_path):
+    show = _populated(tmp_path / "anime" / "Library Show")
+    (show / "ep2.mkv").write_text("678")
+    qbt = FakeQbt(
+        rules={"Show": {"affectedFeeds": ["http://feed"], "savePath": str(show)},
+               "Show @other": {"affectedFeeds": ["http://other"], "savePath": str(show)}},
+        feed_tree={"Show": {"uid": "u", "url": "http://feed"},
+                   "Show @other": {"uid": "o", "url": "http://other"}},
+        torrents=[{"hash": "mine", "save_path": str(show), "size": 3,
+                   "content_path": str(show / "ep2.mkv"),
+                   "tags": "Anime, " + actions.rule_tag("Show")},
+                  {"hash": "theirs", "save_path": str(show), "size": 5,
+                   "content_path": str(show / "ep1.mkv"),
+                   "tags": "Anime, " + actions.rule_tag("Show @other")},
+                  {"hash": "old", "save_path": str(show), "size": 9,
+                   "content_path": str(show / "ep0.mkv"), "tags": "Anime"}])
+    return make(qbt), show
+
+
+def test_a_subscription_tags_its_torrents_with_its_own_tag(make):
+    e = make()
+    res = e.ani.subscribe("Frieren 1080p", items=_frieren(1))
+    tags = _setrule(e.qbt)["torrentParams"]["tags"]
+    assert tags == ["Anime", actions.rule_tag(res.name)]
+
+
+def test_removing_from_a_shared_folder_takes_only_the_rules_torrents(make, tmp_path):
+    e, show = _shared_env(make, tmp_path)
+    [plan] = e.ani.remove(["Show"], drop_torrents=True, drop_files=True)
+    [fields] = e.qbt.posts_to("/api/v2/torrents/delete")
+    assert fields == {"hashes": "mine", "deleteFiles": "true"}
+    assert plan.torrent_count_in_qb == 1 and plan.size_bytes == 3
+    assert (show / "ep1.mkv").exists()
+
+
+def test_deleting_files_in_a_shared_folder_deletes_only_the_rules_files(make, tmp_path):
+    e, show = _shared_env(make, tmp_path)
+    e.ani.remove(["Show"], drop_files=True)
+    assert e.qbt.posts_to("/api/v2/torrents/delete") == []
+    assert not (show / "ep2.mkv").exists()
+    assert (show / "ep1.mkv").exists() and show.is_dir()
+
+
+def test_a_rule_files_outside_its_folder_are_never_deleted(make, tmp_path, outside_dir):
+    e, show = _shared_env(make, tmp_path)
+    e.qbt.torrents[0]["content_path"] = str(outside_dir / "ep1.mkv")
+    e.ani.remove(["Show"], drop_files=True)
+    assert (outside_dir / "ep1.mkv").exists() and (show / "ep2.mkv").exists()
+
+
+def test_a_shared_folder_with_none_of_the_rules_torrents_keeps_everything(make, tmp_path):
+    e, show = _shared_env(make, tmp_path)
+    e.qbt.torrents = [t for t in e.qbt.torrents if t["hash"] != "mine"]
+    [plan] = e.ani.remove(["Show"], drop_torrents=True, drop_files=True)
+    assert e.qbt.posts_to("/api/v2/torrents/delete") == []
+    assert plan.torrents == [] and sorted(p.name for p in show.iterdir()) == [
+        "ep1.mkv", "ep2.mkv"]
+
+
+def test_a_subscription_in_a_shared_folder_counts_only_its_own(make, tmp_path):
+    e, show = _shared_env(make, tmp_path)
+    infos = {i.name: i for i in e.ani.subscriptions()}
+    assert (infos["Show"].torrent_count, infos["Show"].file_count) == (1, 1)
+    assert (infos["Show @other"].torrent_count,
+            infos["Show @other"].file_count) == (1, 1)
+    assert infos["Show"].save_path == str(show)
+
+
+def test_torrents_by_name_follow_the_rules_folder_and_tag(make, tmp_path):
+    e, _ = _shared_env(make, tmp_path)
+    assert [t["hash"] for t in e.ani.torrents(name="Show")] == ["mine"]
+    # A name with no rule is a download's folder under the base, as before.
+    e.qbt.torrents.append({"hash": "dl", "save_path": os.path.join(e.save_base, "Movie")})
+    assert [t["hash"] for t in e.ani.torrents(name="Movie")] == ["dl"]
+
+
+def test_a_rule_whose_folder_is_only_in_torrent_params_is_read_there(make, tmp_path):
+    e, show = _shared_env(make, tmp_path)
+    e.qbt.rules["Show"] = {"affectedFeeds": ["http://feed"], "savePath": "",
+                           "torrentParams": {"save_path": str(show)}}
+    assert [t["hash"] for t in e.ani.torrents(name="Show")] == ["mine"]
 
 
 # -------------------------------------------------------- serialization
@@ -1800,7 +1890,7 @@ def test_to_jsonable_dataclasses(tmp_path):
     out = to_jsonable([plan])
     assert out == [{"name": "n", "feed_url": "http://f", "feed_path": None,
                     "save_path": "/p", "torrents": [{"hash": "h"}],
-                    "size_bytes": 5, "torrent_count_in_qb": 1}]
+                    "size_bytes": 5, "torrent_count_in_qb": 1, "owns_folder": True}]
     sub = actions.SubscribeResult("n", "u", "/p", "", "x|y", ["a"])
     assert to_jsonable(sub)["tags"] == ["a"]
     add = actions.AddResult(1, "/p", ["a"], ["h"])

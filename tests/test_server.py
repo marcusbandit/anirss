@@ -664,7 +664,7 @@ def test_subscribe_with_query_and_items(env):
     assert rule["ruleName"] == "Frieren"
     assert rule_def["savePath"] == os.path.join(str(env.save), "Frieren")
     assert rule_def["affectedFeeds"] == [body["feed_url"]]
-    assert rule_def["torrentParams"]["tags"] == ["Anime"]
+    assert rule_def["torrentParams"]["tags"] == ["Anime", "anirss:Frieren"]
     assert env.fetch.calls == []          # items given: no search
 
 
