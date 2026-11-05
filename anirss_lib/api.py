@@ -31,6 +31,7 @@ import anirss_lib
 from anirss_lib import config as config_mod
 from anirss_lib import endpoint_config, refinement
 from anirss_lib import endpoints as endpoints_mod
+from anirss_lib import repos as repos_mod
 from anirss_lib import stats as stats_mod
 from anirss_lib.config import (
     AnirssConfig,
@@ -46,6 +47,7 @@ from anirss_lib.errors import (
     NoEndpointsError,
     NotFoundError,
     QbtAuthError,
+    RepoError,
     ValidationError,
 )
 from anirss_lib.nyaa import fetch_rss
@@ -59,6 +61,7 @@ from anirss_lib.qbt.actions import (
 )
 from anirss_lib.qbt.clients import download_root, local_files, qbt_clients
 from anirss_lib.qbt.session import QbtSession, _qbt_reachable, login_with_password
+from anirss_lib.redact import redact_url
 from anirss_lib.refinement import RefineOutcome
 from anirss_lib.titles import show_name
 from anirss_lib.types import Item
@@ -66,8 +69,8 @@ from anirss_lib.types import Item
 __all__ = [
     "FEATURES", "AddResult", "Anirss", "AnirssError", "Endpoint", "Item", "RefineOutcome",
     "RemovePlan", "RuleInfo", "SearchResult", "SubscribeResult",
-    "SubscriptionSpec", "client_info", "endpoint_info", "item_from_dict",
-    "redact_url", "to_jsonable",
+    "SubscriptionSpec", "client_info", "endpoint_info", "index_info", "item_from_dict",
+    "offer_info", "redact_url", "repo_info", "to_jsonable",
 ]
 
 T = TypeVar("T")
@@ -91,7 +94,7 @@ LOGIN_COOLDOWN_S = 300
 #                    session and saved password, so pointing anirss at another
 #                    qBittorrent never sends it the configured one's. An anirss
 #                    without it fails at nothing; it only misbehaves quietly.
-FEATURES = ("qbt_clients", "qbt_env_session", "endpoint_writes")
+FEATURES = ("qbt_clients", "qbt_env_session", "endpoint_writes", "endpoint_repos")
 
 
 class SearchResult(NamedTuple):
@@ -145,32 +148,49 @@ def item_from_dict(d: dict) -> Item:
     return Item(**kw)
 
 
-_SECRET_PARAMS = ("token", "apikey", "api_key", "key", "passkey", "auth", "secret",
-                  "pass", "password", "pwd", "rsskey", "uid", "sid", "session")
-
-
-def redact_url(url: str) -> str:
-    """`url` with secret-looking query values (token=, apikey=, …) masked,
-    for showing endpoint config to a frontend."""
-    parts = urllib.parse.urlsplit(url)
-    if parts.username or parts.password:
-        host = parts.hostname or ""
-        if ":" in host:
-            host = f"[{host}]"
-        netloc = f"***@{host}" + (f":{parts.port}" if parts.port else "")
-        parts = parts._replace(netloc=netloc)
-    if not parts.query:
-        return urllib.parse.urlunsplit(parts)
-    pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
-    masked = [(k, "***" if k.lower() in _SECRET_PARAMS and v else v) for k, v in pairs]
-    query = urllib.parse.urlencode(masked, safe="{}*")
-    return urllib.parse.urlunsplit(parts._replace(query=query))
-
-
-def endpoint_info(ep: Endpoint) -> dict:
-    """Display-safe description of an endpoint (secrets in its URL masked)."""
-    return {"name": ep.name, "kind": ep.kind, "url": redact_url(ep.url),
+def endpoint_info(ep: Endpoint, secrets: tuple[str, ...] | list[str] = ()) -> dict:
+    """Display-safe description of an endpoint (secrets in its URL masked:
+    secret-looking query values, plus each of `secrets` wherever it sits;
+    Anirss.endpoint_view passes the ones an installed endpoint was given)."""
+    return {"name": ep.name, "kind": ep.kind, "url": redact_url(ep.url, secrets),
             "client_side_refine": refinement.is_client_side(ep)}
+
+
+def _definition_info(d: repos_mod.Definition) -> dict:
+    return {
+        "id": d.id, "name": d.name, "version": d.version, "kind": d.kind,
+        "lang": d.lang, "nsfw": d.nsfw, "host": d.host,
+        "searchable": d.searchable, "note": repos_mod.not_searchable_reason(d),
+        "auth": [{"key": f.key, "label": f.label, "secret": f.secret,
+                  "help": f.help, "help_url": f.help_url} for f in d.auth],
+    }
+
+
+def repo_info(repo: repos_mod.Repo) -> dict:
+    """A trusted repo as a frontend shows it (no payload)."""
+    return {"url": repo.url, "name": repo.name, "key": repo.key,
+            "fingerprint": repo.fingerprint, "nsfw": repo.nsfw,
+            "serial": repo.serial, "fetched_at": repo.fetched_at,
+            "error": repo.error, "endpoints": len(repo.definitions())}
+
+
+def index_info(url: str, index: repos_mod.Index) -> dict:
+    """A fetched, verified, not yet trusted repo: what the user is asked to
+    accept."""
+    return {"url": url, "name": index.name, "key": index.key,
+            "fingerprint": index.fingerprint, "nsfw": index.nsfw,
+            "serial": index.serial,
+            "endpoints": [_definition_info(d) for d in index.endpoints],
+            "skipped": [{"id": i, "reason": r} for i, r in index.skipped]}
+
+
+def offer_info(offer: repos_mod.Offer) -> dict:
+    """One endpoint a trusted repo offers, with where it stands here."""
+    return {"repo": offer.repo, "repo_name": offer.repo_name,
+            **_definition_info(offer.definition),
+            "installed_as": offer.installed_as,
+            "installed_version": offer.installed_version,
+            "update": offer.update}
 
 
 def client_info(client: QbtConfig) -> dict:
@@ -245,7 +265,8 @@ class Anirss:
                  qbt_password: str | None = None,
                  autostart_qbt: bool = False,
                  persist_session: bool = False,
-                 config_file: str | os.PathLike | None = None) -> None:
+                 config_file: str | os.PathLike | None = None,
+                 repos_file: str | os.PathLike | None = None) -> None:
         if config is not None:
             self.config: AnirssConfig = build_config(config)
         else:
@@ -254,6 +275,9 @@ class Anirss:
         # The file add_endpoint/remove_endpoint write; None (a config given
         # as a dict, with no file named) makes them refuse.
         self.config_file = Path(config_file).expanduser() if config_file else None
+        # Trusted endpoint repos and what was installed from them.
+        self.repos_file = (Path(repos_file).expanduser() if repos_file
+                           else repos_mod.STATE_PATH)
         self._endpoints = load_endpoints(self.config)
         self._endpoints_lock = threading.Lock()
         self._clients = qbt_clients(self.config)
@@ -297,12 +321,40 @@ class Anirss:
         `kind`, `url`, `category` and `filter` are accepted; on-demand
         endpoints run commands and stay hand-written. Returns the endpoint and
         whether it replaced one."""
+        ep, replaced = self._put_endpoint(spec)
+        # Written by hand now: it is no longer the one a repo installed, so
+        # a repo update must not overwrite it.
+        if replaced and self.repos_file.exists():
+            repos_mod.update_state(lambda st: st.installed.pop(ep.name, None),
+                                   self.repos_file)
+        return ep, replaced
+
+    def _put_endpoint(self, spec: dict, *, private: bool = False
+                      ) -> tuple[Endpoint, bool]:
         clean = endpoint_config.check_spec(spec)
         path = self._writable_config()
         with self._endpoints_lock:
-            replaced = endpoint_config.add_endpoint(path, clean, self._implicit())
+            replaced = endpoint_config.add_endpoint(path, clean, self._implicit(),
+                                                    private=private)
             self._reload_endpoints(path)
             return self.endpoint(clean["name"]), replaced
+
+    def endpoint_secrets(self, name: str) -> list[str]:
+        """The secret values an installed endpoint's URL holds, as they
+        appear in it, so a display can mask them wherever they sit."""
+        inst = repos_mod.load_state(self.repos_file).installed.get(name) \
+            if self.repos_file.exists() else None
+        d = inst.as_definition() if inst else None
+        ep = next((e for e in self._endpoints if e.name == name), None)
+        if d is None or ep is None:
+            return []
+        values = repos_mod.extract(d, ep.url) or {}
+        return [urllib.parse.quote(values[f.key], safe=":" if f.key == "host" else "")
+                for f in d.auth if f.secret and values.get(f.key)]
+
+    def endpoint_view(self, ep: Endpoint) -> dict:
+        """endpoint_info() with an installed endpoint's own secrets masked too."""
+        return endpoint_info(ep, self.endpoint_secrets(ep.name))
 
     def remove_endpoint(self, name: str) -> None:
         """Takes an endpoint out of the config file and out of use. Its
@@ -311,6 +363,156 @@ class Anirss:
         with self._endpoints_lock:
             endpoint_config.remove_endpoint(path, name, self._implicit())
             self._reload_endpoints(path)
+        if self.repos_file.exists():
+            repos_mod.update_state(lambda st: st.installed.pop(name, None),
+                                   self.repos_file)
+
+    # ---- endpoint repos ------------------------------------------------
+
+    def repos(self, *, refresh: bool = False) -> list[repos_mod.Repo]:
+        """The trusted endpoint repos. `refresh` fetches each again first; a
+        repo that fails keeps its last good index and carries `error`."""
+        if not refresh:
+            return repos_mod.load_state(self.repos_file).repos
+        # Fetch with no lock held (each can take FETCH_TIMEOUT), then apply
+        # what came back under it.
+        fetched = repos_mod.fetch_all(
+            [r.url for r in repos_mod.load_state(self.repos_file).repos])
+        return repos_mod.update_state(
+            lambda st: repos_mod.refresh(st, fetcher=fetched.get_or_raise),
+            self.repos_file)
+
+    def preview_repo(self, url: str, *, allow_local: bool = True) -> repos_mod.Index:
+        """Fetches and verifies a repo without trusting it: show the user its
+        name, URL and key fingerprint, then call trust_repo(). `allow_local`
+        lets `url` be a local path or file:// URL; the HTTP API turns it off."""
+        if not isinstance(url, str) or not url.strip():
+            raise ValidationError("give the repo's URL")
+        if not allow_local and not url.strip().lower().startswith(("https://", "http://")):
+            raise ValidationError("a repo address starts with https://")
+        return repos_mod.parse(repos_mod.fetch(url))
+
+    def trust_repo(self, url: str, key: str, *,
+                   index: repos_mod.Index | None = None,
+                   allow_local: bool = True) -> repos_mod.Repo:
+        """Trusts the repo at `url`, pinning `key` (the one the user saw in
+        preview_repo). The repo is fetched again unless `index` is that
+        preview; an index signed by any other key is refused."""
+        index = index or self.preview_repo(url, allow_local=allow_local)
+        if index.key != key:
+            raise RepoError("key_changed",
+                            f"the repo is signed by {index.fingerprint}, not the key "
+                            f"that was shown; look at it again before trusting it")
+        return repos_mod.update_state(lambda st: repos_mod.accept(st, url, index),
+                                      self.repos_file)
+
+    def remove_repo(self, ref: str) -> repos_mod.Repo:
+        """Stops trusting a repo (by URL or name). Endpoints installed from
+        it stay configured; remove them with remove_endpoint()."""
+        def drop(st: repos_mod.State) -> repos_mod.Repo:
+            repo = st.repo(ref)
+            st.repos.remove(repo)
+            return repo
+        return repos_mod.update_state(drop, self.repos_file)
+
+    def repo_endpoints(self) -> list[repos_mod.Offer]:
+        """Every endpoint the trusted repos offer, with what is installed
+        and what has an update. Reads the last good indexes; call
+        repos(refresh=True) first to check for new ones."""
+        return repos_mod.catalog(repos_mod.load_state(self.repos_file))
+
+    def repo_endpoint(self, endpoint_id: str, *, repo: str | None = None
+                      ) -> repos_mod.Offer:
+        """One offer by id, from `repo` (URL or name) when two repos share it."""
+        return repos_mod.find_offer(repos_mod.load_state(self.repos_file),
+                                    endpoint_id, repo)
+
+    def install_endpoint(self, endpoint_id: str,
+                         credentials: dict[str, str] | None = None, *,
+                         repo: str | None = None,
+                         name: str | None = None) -> Endpoint:
+        """Installs an endpoint from a trusted repo: fills its address with
+        `credentials` (one value per `auth` key) and adds it to the config
+        file, named after its id unless `name` says otherwise. A name already
+        taken by an endpoint this repo entry did not install is refused."""
+        offer = self.repo_endpoint(endpoint_id, repo=repo)
+        d = offer.definition
+        if not d.searchable:
+            raise ValidationError(f"{d.id}: {offer.note}")
+        name = (name or d.id).strip()
+        state = repos_mod.load_state(self.repos_file)
+        mine = state.installed.get(name)
+        ours = mine is not None and (mine.repo, mine.id) == (offer.repo, d.id)
+        if not ours and any(ep.name == name for ep in self._endpoints):
+            raise ValidationError(f"an endpoint called {name!r} is already configured; "
+                                  f"install this one under another name")
+        if offer.installed_as and offer.installed_as != name:
+            raise ValidationError(f"{d.id} is already installed as {offer.installed_as!r}")
+        ep, _ = self._put_endpoint(repos_mod.endpoint_spec(d, credentials or {}, name),
+                                   private=any(f.secret for f in d.auth))
+
+        def record(st: repos_mod.State) -> None:
+            st.installed[name] = repos_mod.Installed(
+                name=name, repo=offer.repo, id=d.id, version=d.version,
+                definition=d.raw)
+        repos_mod.update_state(record, self.repos_file)
+        return ep
+
+    def update_needs(self, name: str) -> list[repos_mod.AuthField]:
+        """The fields an installed endpoint's update must ask for again:
+        none when the values typed in before may follow it (same fields,
+        same host, still https), every field otherwise."""
+        inst, offer = self._installed_offer(name)
+        old = inst.as_definition()
+        new = offer.definition
+        if old is not None and repos_mod.keeps_credentials(old, new):
+            current = next((e for e in self._endpoints if e.name == name), None)
+            if current is not None and repos_mod.extract(old, current.url) is not None:
+                return []
+        return list(new.auth)
+
+    def update_endpoint(self, name: str,
+                        credentials: dict[str, str] | None = None) -> Endpoint:
+        """Moves an installed endpoint to the definition its repo offers now.
+        Without `credentials`, the values it was installed with follow it
+        when update_needs() is empty; otherwise they must be given."""
+        inst, offer = self._installed_offer(name)
+        new = offer.definition
+        if not new.searchable:
+            raise ValidationError(f"{new.id}: {offer.note}")
+        if credentials is None:
+            if self.update_needs(name):
+                raise ValidationError(f"{name}'s update changes what it asks for or "
+                                      f"where it sends it; give its settings again")
+            old = inst.as_definition()
+            current = self.endpoint(name)
+            credentials = (repos_mod.extract(old, current.url) or {}) if old else {}
+        ep, _ = self._put_endpoint(repos_mod.endpoint_spec(new, credentials, name),
+                                   private=any(f.secret for f in new.auth))
+
+        def record(st: repos_mod.State) -> None:
+            st.installed[name] = repos_mod.Installed(
+                name=name, repo=inst.repo, id=inst.id, version=new.version,
+                definition=new.raw)
+        repos_mod.update_state(record, self.repos_file)
+        return ep
+
+    def installed_endpoints(self) -> dict[str, repos_mod.Installed]:
+        """Endpoint name to where it was installed from, for endpoints that
+        came from a repo."""
+        return repos_mod.load_state(self.repos_file).installed
+
+    def _installed_offer(self, name: str
+                         ) -> tuple[repos_mod.Installed, repos_mod.Offer]:
+        state = repos_mod.load_state(self.repos_file)
+        inst = state.installed.get(name)
+        if inst is None:
+            raise NotFoundError(f"{name!r} was not installed from an endpoint repo")
+        for offer in repos_mod.catalog(state):
+            if (offer.repo, offer.definition.id) == (inst.repo, inst.id):
+                return inst, offer
+        raise NotFoundError(f"{name!r}: its repo no longer offers {inst.id!r}")
+
 
     def _writable_config(self) -> Path:
         if self.config_file is None:

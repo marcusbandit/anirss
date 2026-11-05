@@ -116,7 +116,8 @@ exits.
 
 ```python
 Anirss(config=None, *, config_path=None, qbt_password=None,
-       autostart_qbt=False, persist_session=False, config_file=None)
+       autostart_qbt=False, persist_session=False, config_file=None,
+       repos_file=None)
 ```
 
 | Option | Meaning |
@@ -127,9 +128,11 @@ Anirss(config=None, *, config_path=None, qbt_password=None,
 | `autostart_qbt` | Start a local qBittorrent when it is not running, as the CLI does. Default `False`: a library should not spawn processes. |
 | `persist_session` | Write the qBittorrent session cookie to the SID cache the CLI shares. Default `False`: the cache is read but not written. |
 | `config_file` | The file `add_endpoint` and `remove_endpoint` write. Defaults to the file the config was read from; `None` with a `config` dict, which makes both raise `ConfigError`. |
+| `repos_file` | Where trusted endpoint repos and what was installed from them are kept. Default `~/.local/state/anirss/repos.json`, shared with the CLI. Read and written only by the repo methods and `remove_endpoint`. |
 
 anirss ships with no endpoints. A fresh config has an empty list, and every
-call that needs one raises `NoEndpointsError` until the user adds their own.
+call that needs one raises `NoEndpointsError` until the user adds their own,
+by hand or from an [endpoint repo](#endpoint-repos).
 
 The constructor does not contact qBittorrent. Login happens lazily on the first
 call that needs it (`subscribe*`, `download*`, `movie`, `upload_torrent`,
@@ -199,6 +202,22 @@ Endpoints and search:
 | `fetch_feed(url, *, enrich=False)` | `list[Item]` | Any http(s) RSS URL. |
 | `enrich(items, *, deadline_s=20.0)` | `list[Item]` | Fills unknown `seeders`/`leechers`/`downloads` by scraping trackers (cached). Never raises. Can block about 20 seconds. |
 
+Endpoint repos (see [Endpoint repos](#endpoint-repos) for the format and
+the trust rules):
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `preview_repo(url, *, allow_local=True)` | `repos.Index` | Fetches and verifies a repo without trusting it. Show the user `name`, the URL and `fingerprint`, then call `trust_repo`. `url` may also be a local path unless `allow_local` is off (the HTTP API turns it off: only http(s) there). `RepoError` when the file is not a repo or its signature fails, `FetchError` when it can't be fetched. |
+| `trust_repo(url, key, *, index=None)` | `repos.Repo` | Pins `key` (the one from the preview the user saw) and saves the index. Fetches again unless `index` is that preview. Another key raises `RepoError` with `code` `key_changed`. |
+| `repos(*, refresh=False)` | `list[repos.Repo]` | The trusted repos. `refresh` fetches each again; one that fails keeps its last good index and carries `error`. |
+| `remove_repo(ref)` | `repos.Repo` | By URL or name. Endpoints installed from it stay. |
+| `repo_endpoints()` | `list[repos.Offer]` | Everything the trusted repos offer: the `definition`, `installed_as`, `installed_version`, `update`, and `note` (why anirss cannot search it, for the `tosho` and `json` kinds). |
+| `repo_endpoint(id, *, repo=None)` | `repos.Offer` | One offer. `repo` (URL or name) when two repos share an id. |
+| `install_endpoint(id, credentials=None, *, repo=None, name=None)` | `Endpoint` | Fills the definition's address with `credentials` (one string per `auth` key) and adds it with `add_endpoint`, named after its id. A name already used by an endpoint this repo entry did not install is a `ValidationError`; pass `name`. A credential makes the config file mode 600. |
+| `update_needs(name)` | `list[repos.AuthField]` | What an update of an installed endpoint must ask for: empty when the values it was installed with may follow it (same `auth` keys, same host, no step down to http), every field otherwise. |
+| `update_endpoint(name, credentials=None)` | `Endpoint` | Moves it to the version its repo offers now. Without `credentials` the old values follow it, or `ValidationError` when `update_needs` is not empty. |
+| `installed_endpoints()` | `dict[str, repos.Installed]` | Endpoint name to `repo`, `id`, `version` for endpoints that came from a repo. |
+
 `SearchResult` has `query`, `endpoint` (where the items came from), `items`,
 `tried`, and the property `fell_back`. `tried` has one entry per endpoint
 consulted: `{"endpoint", "status": "ok"|"empty"|"unreachable", "count",
@@ -249,9 +268,11 @@ Helpers also exported from `anirss_lib.api`:
 - `to_jsonable(obj)`: results to JSON-ready builtins.
 - `item_from_dict(d)`: rebuild an `Item` from its JSON form (unknown keys
   ignored, `null` fields take their default).
-- `endpoint_info(ep)`: display-safe dict for an `Endpoint`: `name`, `kind`,
-  `url` (redacted), `client_side_refine`. This is what `GET /endpoints` returns
-  per endpoint. Note that `Anirss.endpoints()` returns the full `Endpoint`
+- `endpoint_info(ep, secrets=())`: display-safe dict for an `Endpoint`:
+  `name`, `kind`, `url` (redacted, plus each value in `secrets` masked wherever
+  it sits), `client_side_refine`. `Anirss.endpoint_view(ep)` passes the secret
+  values an endpoint installed from a repo was given, so a token in its path is
+  masked too; that is what `GET /endpoints` returns per endpoint. Note that `Anirss.endpoints()` returns the full `Endpoint`
   with its real URL, including any token.
 - `client_info(client)`: display-safe dict for one of `Anirss.clients()`:
   `name` and `url` (credentials in the URL masked). This is what `GET /clients`
@@ -288,6 +309,7 @@ All in `anirss_lib.errors`:
 | `FetchError` | `AnirssError` | A search endpoint could not be fetched or parsed. |
 | `QbtError` | `AnirssError` | qBittorrent unreachable, or it rejected a call. |
 | `QbtAuthError` | `QbtError` | No usable credentials, or they were rejected. |
+| `RepoError` | `AnirssError` | An endpoint repo file can't be trusted or read. `code` is `format`, `version`, `signature`, `key_changed` or `stale`. |
 
 Other exceptions (bugs, `OSError`) are not wrapped.
 
@@ -412,6 +434,7 @@ Every error has the same shape:
 | 404 | `not_found` | Unknown route, unknown endpoint, unknown subscription, no results to subscribe to (`NotFoundError`). |
 | 405 | `method_not_allowed` | Route exists, method does not. |
 | 409 | `no_endpoints` | `NoEndpointsError`: no endpoint is configured yet. Offer the user a way to add one. |
+| 422 | `repo_error` | `RepoError`: an endpoint repo is not one anirss can trust. The envelope also carries `code` (`format`, `version`, `signature`, `key_changed`, `stale`). |
 | 500 | `config_error` | `ConfigError`. |
 | 500 | `internal_error` | Unexpected exception. The message is generic; the traceback goes to `anirss.log`. |
 | 502 | `fetch_error` | `FetchError`: every search endpoint was unreachable, or a refetch/feed fetch failed. |
@@ -487,6 +510,13 @@ Summary:
 | GET | `/endpoints` | Configured search endpoints. |
 | POST | `/endpoints` | Add an endpoint, or replace the one with its name. |
 | DELETE | `/endpoints/{name}` | Remove an endpoint. |
+| GET | `/repos` | Trusted endpoint repos (`?refresh=1` checks them again). |
+| POST | `/repos` | Fetch and verify a repo, without trusting it. |
+| POST | `/repos/trust` | Trust a repo, pinning the key the user saw. |
+| POST | `/repos/remove` | Stop trusting a repo. |
+| GET | `/repos/endpoints` | What the trusted repos offer. |
+| POST | `/repos/install` | Install an endpoint from a repo. |
+| POST | `/repos/update` | Move an installed endpoint to its newest version. |
 | GET, POST | `/search` | Search. |
 | POST | `/feed` | Fetch any RSS URL. |
 | POST | `/enrich` | Fill in missing seeder/download stats. |
@@ -512,7 +542,7 @@ No auth. The Host guard still applies.
 curl $BASE/health
 ```
 ```json
-{"ok": true, "version": "0.6.1", "features": ["qbt_clients", "qbt_env_session", "endpoint_writes"]}
+{"ok": true, "version": "0.7.0", "features": ["qbt_clients", "qbt_env_session", "endpoint_writes", "endpoint_repos"]}
 ```
 
 `features` names what this anirss can do. Check for the one you rely on rather
@@ -524,6 +554,7 @@ has no `features` at all). A name keeps its meaning once listed.
 | --- | --- | --- |
 | `qbt_clients` | 0.5.0 | Several qBittorrents in `[[qbittorrent.client]]` blocks, [GET /clients](#get-clients), and `client` on every route that reaches qBittorrent. |
 | `endpoint_writes` | 0.6.0 | [POST /endpoints](#post-endpoints) and [DELETE /endpoints/{name}](#delete-endpointsname), and a fresh config with no endpoints (`409 no_endpoints` until one is added). |
+| `endpoint_repos` | 0.7.0 | The [`/repos` routes](#endpoint-repos-routes): signed endpoint repos in AniBeam's format, installed into `config.toml`. |
 | `qbt_env_session` | 0.5.0 | An `ANIRSS_QBT_URL` that the config does not name keeps its own session and saved password, so an app that points anirss at another qBittorrent never sends it the configured one's. An anirss without it fails at nothing, it only misbehaves quietly, so an app that sets `ANIRSS_QBT_URL` should refuse one that does not list it. |
 
 Every route that reaches qBittorrent (`/qbt/status`, `/subscriptions` and
@@ -619,6 +650,51 @@ previous file as `config.toml.bak`.
 
 `404 not_found` for an unknown name. Subscriptions on the endpoint keep running
 in qBittorrent.
+
+#### Endpoint repos routes
+
+A user adds a repo in two steps, so they see its key before anything is saved:
+
+```
+curl -X POST ... -d '{"url": "https://repo.example/index.json"}' $BASE/repos
+```
+```json
+{"repo": {"url": "https://repo.example/index.json", "name": "Someone's endpoints",
+          "key": "ed25519:...", "fingerprint": "C952 51B9 111F 36FF 28CF 535D E096 37BD",
+          "nsfw": false, "serial": 1793477418,
+          "endpoints": [{"id": "site", "name": "Site", "version": 1, "kind": "nyaa",
+                         "lang": "en", "nsfw": false, "host": "site.example",
+                         "searchable": true, "note": null, "auth": []}],
+          "skipped": []}}
+```
+
+Show `name`, `url` and `fingerprint`, then on the user's yes:
+`POST /repos/trust {"url", "key"}` with the `key` from that preview, which
+answers `201 {"repo": {...}}`. The repo is fetched again; an index signed by
+another key is `422 repo_error` with `code: "key_changed"`.
+
+`GET /repos` lists trusted repos: `url`, `name`, `key`, `fingerprint`, `nsfw`,
+`serial`, `fetched_at` (unix seconds), `error` (why the last refresh failed,
+else `null`; the last good index stays in use) and `endpoints` (a count).
+`?refresh=1` fetches each first. `POST /repos/remove {"url"}` stops trusting
+one (by URL or name) and answers `{"removed": url}`; its installed endpoints
+stay.
+
+`GET /repos/endpoints` answers `{"endpoints": [...]}`, one object per offer:
+the definition fields shown above plus `repo`, `repo_name`, `installed_as`,
+`installed_version` and `update`. Each `auth` entry is `{key, label, secret,
+help, help_url}`: ask the user for each, hiding the value when `secret`.
+
+`POST /repos/install {"id", "credentials"?, "repo"?, "name"?}` installs one:
+`credentials` is an object of strings keyed by `auth` key. It answers `201
+{"endpoint": ...}` (redacted like `GET /endpoints`). A missing credential, a
+kind anirss cannot search, or a name already taken is `400 validation_error`.
+
+`POST /repos/update {"name", "credentials"?}` moves an installed endpoint to
+its newest version and answers `{"endpoint": ...}`. Without `credentials` the
+values it was installed with follow it, unless the new version asks for other
+fields, sends them to another host, or drops from https to http: then it is
+`400 validation_error` and the user is asked again.
 
 #### GET /search
 
@@ -957,6 +1033,45 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/x-bittorren
 
 Status `201`, response shaped like `/downloads` (`AddResult`).
 
+## Endpoint repos
+
+anirss reads the repos AniBeam reads: a repo made for one works in the other,
+and both show the same fingerprint for its key. A repo is one JSON file at a
+URL the user pastes:
+
+```json
+{"format": "anibeam-endpoint-repo", "version": 1,
+ "payload": "<base64 of the index JSON>",
+ "signature": "<base64 ed25519 signature over the payload bytes>"}
+```
+
+The decoded index is `{"name", "key": "ed25519:<base64 of 32 bytes>", "serial",
+"nsfw"?, "endpoints": [definition, ...]}`. The signature is checked against the
+key the index names (strict ed25519, in plain Python, so anirss still has no
+dependencies); trusting pins that key. `serial` only goes up: an index older
+than the last one accepted, or signed by another key, is refused and the last
+good one stays.
+
+A definition is `{"id", "name", "version", "kind", "url", "lang"?, "auth"?,
+"nsfw"?, "category"?, "filter"?, ...}`. `url` holds `{query}` (not for `nyaa`,
+which adds its own) and one `{key}` per `auth` field, filled in at install and
+percent-encoded. Only a `torznab` address may name the user's own server as
+`{host}` (a non-secret field taking `host` or `host:port`), and only that form
+may be plain http. A definition that breaks a rule is left out of the index,
+not the whole repo.
+
+| Repo kind | In anirss |
+| --- | --- |
+| `nyaa` | `nyaa`, with its `category` and `filter`. |
+| `rss` | `rss`. |
+| `torznab` | `rss` (it reads torznab attributes). |
+| `tosho`, `json` | Listed with a `note`, not installable: AniBeam's own kinds. |
+
+`front`, `rate` and `min_core` are AniBeam's and anirss leaves them out. An
+installed endpoint is an ordinary `[[endpoint]]` block named after its id, so
+the rest of anirss (and an app writing endpoints over the API) sees nothing
+different; where it came from is kept in `repos.json`.
+
 ## Data shapes
 
 ### Item
@@ -973,7 +1088,7 @@ One release from a feed. JSON object with exactly these keys:
 | `size` | string | As the feed reports it (for example `"1.4 GiB"`), `""` if absent. |
 | `category` | string | `""` if absent. |
 | `page` | string | Release post URL when the feed exposes one (Erai), else `""`. |
-| `source` | string | Endpoint name when a search fell back to another endpoint, else `""` (meaning the endpoint you asked for). |
+| `source` | string | Endpoint name when a search fell back to another endpoint, else `""` (meaning the endpoint you asked for). A `nyaa` endpoint with a filter that found nothing asks again for every upload, and those results carry `"<endpoint>: all uploads"`; a subscription made from them keeps the filter off. |
 | `resolution` | string | Erai metadata (`"1080p"`), `""` for other feeds. |
 | `infomkv` | string | Erai metadata (`"NF WEB-DL AVC AAC"`), `""` otherwise. |
 | `linktype` | string | Erai metadata (`"Torrent"`), `""` otherwise. |

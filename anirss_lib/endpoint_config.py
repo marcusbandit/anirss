@@ -14,6 +14,7 @@ import re
 import shutil
 import tempfile
 import tomllib
+import urllib.parse
 from pathlib import Path
 
 from anirss_lib.endpoints import load_endpoints
@@ -113,7 +114,8 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def _write(path: Path, new_text: str, expected: list[dict]) -> None:
+def _write(path: Path, new_text: str, expected: list[dict], *,
+           private: bool = False) -> None:
     got = _endpoints_of(new_text)
     if [{k: e.get(k) for k in WRITABLE_KEYS} for e in got] != \
             [{k: e.get(k) for k in WRITABLE_KEYS} for e in expected]:
@@ -131,6 +133,9 @@ def _write(path: Path, new_text: str, expected: list[dict]) -> None:
             f.write(new_text)
         if target.exists():
             shutil.copymode(target, tmp)
+        if private and os.name == "posix":
+            # Before the replace, so the credential is never world-readable.
+            os.chmod(tmp, 0o600)
         os.replace(tmp, target)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
@@ -175,13 +180,16 @@ def _load(path: Path, implicit: list[dict] | None
     return lines, current, blocks
 
 
-def add_endpoint(path: Path, spec: dict, implicit: list[dict] | None = None) -> bool:
+def add_endpoint(path: Path, spec: dict, implicit: list[dict] | None = None, *,
+                 private: bool = False) -> bool:
     """Writes `spec` (already through check_spec) into the file at `path`.
     An endpoint with the same name is replaced in place, comments inside its
     block included; a new one goes after the last [[endpoint]] block, or at
     the end of the file when there is none. One with keys the API cannot
     write (an on-demand endpoint's commands, its own paths) is refused rather
-    than stripped. True when it replaced one."""
+    than stripped. `private` (the endpoint holds a credential) makes the
+    file readable by this user only, from the moment it lands. True when it
+    replaced one."""
     lines, current, blocks = _load(path, implicit)
     found = [_block(lines, b) for b in blocks]
     names = [b.get("name") for b in found]
@@ -207,7 +215,7 @@ def add_endpoint(path: Path, spec: dict, implicit: list[dict] | None = None) -> 
             lines.extend(block)
         expected = [*current, spec]
         replaced = False
-    _write(path, "".join(lines), expected)
+    _write(path, "".join(lines), expected, private=private)
     return replaced
 
 
@@ -226,3 +234,88 @@ def remove_endpoint(path: Path, name: str, implicit: list[dict] | None = None) -
         del lines[start - 1]
     expected = [e for e in current if e.get("name") != name]
     _write(path, "".join(lines), expected)
+
+
+# ---- an endpoint added by hand, from a pasted address --------------------
+
+_NAME_PREFIXES = ("www", "rss", "api", "feed", "feeds", "m")
+
+
+def name_from_url(url: str, taken: list[str] | tuple[str, ...] = ()) -> str:
+    """A short endpoint name from an address's host: `rss.example.org`
+    becomes `example`, a local address `local`. Gets `-2`, `-3`, ... when
+    the name is taken."""
+    host = (urllib.parse.urlsplit(url.replace("{query}", "q")).hostname or "").lower()
+    labels = [x for x in host.split(".") if x]
+    if not labels or host == "localhost" or all(x.isdigit() for x in labels) \
+            or ":" in host:
+        base = "local"
+    else:
+        while len(labels) > 2 and labels[0] in _NAME_PREFIXES:
+            labels = labels[1:]
+        base = labels[0] if len(labels) > 1 else host
+    base = re.sub(r"[^A-Za-z0-9._-]", "-", base).strip("-.") or "endpoint"
+    name, n = base, 2
+    while name in taken:
+        name, n = f"{base}-{n}", n + 1
+    return name
+
+
+def nyaa_parts(url: str) -> tuple[str, str, str]:
+    """(base, category, filter) of a nyaa-style site's address, a search
+    page's included: `https://site/?f=2&c=1_2&q=x` gives
+    (`https://site/`, `1_2`, `2`)."""
+    parts = urllib.parse.urlsplit(url.strip())
+    params = urllib.parse.parse_qs(parts.query)
+    base = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path or "/", "", ""))
+    return base, (params.get("c") or ["1_0"])[0], (params.get("f") or ["0"])[0]
+
+
+def is_nyaa_style(base: str, fetch=None, timeout: float = 10.0) -> bool:
+    """Whether `base` runs nyaa-style software: its RSS search answers with
+    the nyaa feed namespace. Raises FetchError when it can't be reached."""
+    from anirss_lib import nyaa
+    fetch = fetch or nyaa.fetch_bytes
+    qs = urllib.parse.urlencode({"page": "rss", "q": "a", "c": "0_0", "f": "0"})
+    return b"/xmlns/nyaa" in fetch(f"{base}?{qs}", "endpoint", timeout)
+
+
+def put_query(url: str, words: str) -> str:
+    """`url` with the search `words` it holds replaced by `{query}`, for an
+    address pasted from a search the user ran on the site. Raises
+    ValidationError when the words are not in it."""
+    words = words.strip()
+    if not words:
+        raise ValidationError("type the words you searched for")
+    forms = [words, urllib.parse.quote_plus(words), urllib.parse.quote(words),
+             words.replace(" ", "+"), words.replace(" ", "%20")]
+    # Only after the host: the words never stand for part of the site's name.
+    scheme_end = url.find("://") + 3 if "://" in url else 0
+    tail = re.search(r"[/?#]", url[scheme_end:])
+    start = scheme_end + tail.start() if tail else len(url)
+    for form in forms:
+        at = url.lower().find(form.lower(), start)
+        if at >= 0:
+            return url[:at] + "{query}" + url[at + len(form):]
+    raise ValidationError(f"{words!r} is not in that address")
+
+
+def guess_spec(url: str, *, name: str | None = None, taken: tuple[str, ...] = (),
+               fetch=None) -> dict:
+    """The endpoint a pasted address stands for: `rss` when it holds
+    `{query}`, `nyaa` when the site answers like nyaa-style software.
+    Raises ValidationError when it is neither (put_query() fixes that) and
+    FetchError when the site can't be reached to tell."""
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise ValidationError("an endpoint address starts with http:// or https://")
+    if "{query}" in url:
+        spec = {"kind": "rss", "url": url}
+    else:
+        base, category, filt = nyaa_parts(url)
+        if not is_nyaa_style(base, fetch):
+            raise ValidationError("that address holds no {query} and the site does "
+                                  "not answer like a nyaa-style one")
+        spec = {"kind": "nyaa", "url": base, "category": category, "filter": filt}
+    spec["name"] = name or name_from_url(url, taken)
+    return check_spec(spec)

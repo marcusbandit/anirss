@@ -13,8 +13,8 @@ from anirss_lib.types import Item
 
 VALID_KINDS = ("nyaa", "rss")
 
-NO_ENDPOINTS = ("no search endpoints configured: add one under [[endpoint]] in "
-                "config.toml, or from an app that uses anirss")
+NO_ENDPOINTS = ("no search endpoints configured: install one from an endpoint "
+                "repo, or add one by hand")
 
 
 class Endpoint(NamedTuple):
@@ -146,7 +146,8 @@ def search_url(ep: Endpoint, query: str) -> str:
         qs = urllib.parse.urlencode({
             "page": "rss", "q": query, "c": ep.category, "f": ep.filter,
         })
-        return f"{ep.url}?{qs}"
+        # A nyaa address may carry fixed parameters of its own (a token).
+        return f"{ep.url}{'&' if '?' in ep.url else '?'}{qs}"
     return ep.url.replace("{query}", urllib.parse.quote_plus(query))
 
 

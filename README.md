@@ -46,47 +46,66 @@ After the first install, edit `~/.config/anirss/config.toml` to point at your qB
 
 ## Endpoints
 
-anirss can search more than just nyaa.si. Configure one or more `[[endpoint]]` blocks in `~/.config/anirss/config.toml`, each naming a site to search. This is what ships in the default config:
+anirss ships with no endpoints and names no site. You add the ones you want, from an endpoint repo or by hand.
+
+### From an endpoint repo
+
+A repo is a signed list of endpoint definitions that someone keeps, in the same format [AniBeam](https://github.com/marcusbandit/AniBeam) reads, so a repo URL that works there works here. Paste its URL:
+
+```sh
+anirss --add-repo https://repo.example/index.json
+```
+
+anirss checks the signature, shows the repo's name and its key fingerprint, and asks before trusting it. The key is pinned from then on: a later index signed by another key is refused. Then install endpoints from it, one at a time:
+
+```sh
+anirss --install            # pick from what your repos offer
+anirss --install <id>       # or name one
+```
+
+An endpoint that needs an API key, an RSS token or the address of your own Jackett or Prowlarr asks for it right there, with the help text and link the repo gives. It lands in `config.toml` as an ordinary `[[endpoint]]` block, and `config.toml` becomes readable by you only.
+
+```sh
+anirss --repos              # check for updates, list what each repo offers
+anirss --update-endpoints   # move installed endpoints to their newest version
+anirss --endpoints          # what is configured, in the order it is tried
+anirss --remove-repo <name> # stop trusting a repo (installed endpoints stay)
+```
+
+An update keeps the key or token you typed in only when the new version sends it to the same host, over https; otherwise it asks again. Where to find repos: [everythingmoe.com](https://everythingmoe.com).
+
+### By hand
+
+```sh
+anirss --add-endpoint 'https://site.example/rss?q={query}'
+anirss --add-endpoint https://nyaa-style.example/
+```
+
+An address with `{query}` in it becomes an RSS endpoint. One without is checked for nyaa-style software (the `q`/`c`/`f` search and seeder stats); a pasted search page keeps its category and filter. If it is neither and you copied it from a search you ran on the site, anirss asks which words you searched for and puts `{query}` there. Remove one with `anirss --remove-endpoint <name>`.
+
+You can also write the blocks yourself in `~/.config/anirss/config.toml`:
 
 ```toml
 [[endpoint]]
-name = "nyaa"
+name = "main"
 kind = "nyaa"   # nyaa-style software: q/c/f params + seeders/size stats
-url = "https://nyaa.si/"
+url = "https://nyaa-style.example/"
 category = "1_0"
 filter = "0"
 
-# kind = "rss" fits any site with an RSS search URL. Put {query} where the
-# search terms go; extra fixed params are fine. Stats columns show only when
-# the feed carries them. Uncomment to enable AniRena as a fallback:
-#[[endpoint]]
-#name = "anirena"
-#kind = "rss"
-#url = "https://www.anirena.com/rss?q={query}&adult=1"
-
-# Erai-raws members-only tokenized feed also works as kind = "rss" (get your
-# token from their RSS page). anirss recognizes erai feeds and cleans up the
-# titles, and subscribing registers the show's own /anime-list/<slug>/feed/
-# in qBittorrent (validated with one request; falls back to this search URL)
-# with the query enforced via the rule's mustContain. Quality tokens (1080p,
-# WEB-DL, AVC, …) are never sent to the search - Erai's `s=` only matches
-# post text and would return nothing - they filter the results client-side
-# using the feed's erai:resolution/infomkv/linktype metadata:
-#[[endpoint]]
-#name = "erai"
-#kind = "rss"
-#url = "https://www.erai-raws.info/episodes/feed/?res=1080p&type=torrent&subs%5B0%5D=us&s={query}&token=YOUR_TOKEN"
+[[endpoint]]
+name = "fallback"
+kind = "rss"    # any RSS search URL; {query} is where the search words go
+url = "https://rss-search.example/rss?q={query}"
 ```
 
-There are two kinds:
-
-- `kind = "nyaa"`: nyaa-style software (nyaa.si and its clones), with `q`/`c`/`f` query params plus seeder/size stats columns.
-- `kind = "rss"`: any site with an RSS search feed. Put `{query}` wherever the search terms belong in `url`; extra fixed params (like AniRena's `adult=1`) are fine. Stats columns (seeders, size) only show up when the feed actually carries them.
+- `kind = "nyaa"`: nyaa-style software, with `q`/`c`/`f` query params plus seeder/size stats columns. With `filter = "2"` (trusted only), a search that finds nothing asks again for every upload and says so.
+- `kind = "rss"`: any site with an RSS search feed. Put `{query}` wherever the search terms belong in `url`; extra fixed params are fine. Stats columns (seeders, size) only show up when the feed carries them. Torznab feeds from Jackett or Prowlarr read as `rss` too.
 
 Endpoints are tried in priority order, the order they appear in the config; the first one is what anirss starts on. To start on a different one, pass `-e <name>` (also `--endpoint <name>` or `--endpoint=<name>`):
 
 ```sh
-anirss -e anirena Frieren
+anirss -e fallback Frieren
 ```
 
 While searching or refining, `Ctrl-E` switches endpoints on the fly: with two configured it just cycles between them, with three or more it opens a small picker.

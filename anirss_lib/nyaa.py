@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 
 from anirss_lib.errors import FetchError
 from anirss_lib.logging import log
+from anirss_lib.redact import redact_url
 from anirss_lib.types import Item
 
 
@@ -186,7 +187,15 @@ def parse_rss(data: bytes | str, endpoint_name: str = "feed") -> list[Item]:
 def fetch_rss(url: str, endpoint_name: str = "feed",
               timeout: float = 10.0) -> list[Item]:
     """GET `url` and parse it as an RSS feed. Raises FetchError on failure."""
-    log("INFO", f"GET {url}")
+    items = parse_rss(fetch_bytes(url, endpoint_name, timeout), endpoint_name)
+    log("INFO", f"  -> {len(items)} items")
+    return items
+
+
+def fetch_bytes(url: str, endpoint_name: str = "feed",
+                timeout: float = 10.0) -> bytes:
+    """GET `url` the way a feed is fetched. Raises FetchError on failure."""
+    log("INFO", f"GET {redact_url(url)}")
     # erai-raws (Cloudflare) 502s non-browser User-Agents like the old
     # "anirss/1.0", so present as a stock Firefox.
     req = urllib.request.Request(url, headers={
@@ -200,9 +209,6 @@ def fetch_rss(url: str, endpoint_name: str = "feed",
         # so the fallback probe can move on instead of feeling like a hang.
         # Endpoints that are slow by nature raise it via `timeout`.
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = resp.read()
+            return resp.read()
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise FetchError(f"can't reach {endpoint_name}: {e}") from e
-    items = parse_rss(data, endpoint_name)
-    log("INFO", f"  -> {len(items)} items")
-    return items

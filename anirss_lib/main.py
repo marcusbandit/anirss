@@ -25,7 +25,7 @@ from anirss_lib.config import (
 )
 from anirss_lib import endpoints as endpoints_mod
 from anirss_lib.endpoints import Endpoint, EndpointState, load_endpoints
-from anirss_lib.errors import AnirssError, ConfigError
+from anirss_lib.errors import AnirssError, ConfigError, NoEndpointsError
 from anirss_lib.format import (
     category_chip, colorize_title, format_stats, show_titles,
     source_header_row,
@@ -227,6 +227,10 @@ def _handle_meta_flags(argv: list[str], cfg: AnirssConfig) -> bool:
         return True
     if a == "--migrate-config":
         migrate_config()
+        return True
+    from anirss_lib.cli import repos as repo_cli
+    if a in repo_cli.FLAGS:
+        repo_cli.run(a, argv[1:])
         return True
     if a == "--serve":
         from anirss_lib.server import serve
@@ -683,6 +687,22 @@ def _run_interactive(initial_query: str, force_url: str | None,
         print(summary)
 
 
+def _print_completion_words(flag: str, cfg: AnirssConfig) -> None:
+    from anirss_lib import repos as repos_mod
+    try:
+        if flag == "--_endpoints":
+            words = [e.name for e in load_endpoints(cfg)]
+        elif flag == "--_offers":
+            state = repos_mod.load_state()
+            words = [o.definition.id for o in repos_mod.catalog(state)
+                     if o.definition.searchable and not o.installed_as]
+        else:
+            words = [r.name for r in repos_mod.load_state().repos]
+    except AnirssError:
+        return
+    print("\n".join(words))
+
+
 # ---- entry point ----
 
 def main() -> None:
@@ -708,6 +728,11 @@ def _main() -> None:
             print("\n".join(c["name"] for c in qbt_clients(cfg)))
         except ConfigError:
             pass
+        return
+    # Hidden, for the completions too: endpoint names, the ids --install can
+    # take, and the trusted repos.
+    if sys.argv[1:2] in (["--_endpoints"], ["--_offers"], ["--_repos"]):
+        _print_completion_words(sys.argv[1], cfg)
         return
 
     argv, client = take_client_flag(sys.argv[1:])
@@ -750,7 +775,12 @@ def _main() -> None:
         return
     # After the op flags: -Q, -Sy and -R only talk to qBittorrent and must
     # work on a config with no endpoint yet.
-    eps = EndpointState(endpoint_list, parsed.endpoint)
+    try:
+        eps = EndpointState(endpoint_list, parsed.endpoint)
+    except NoEndpointsError:
+        die("no search endpoints yet. Add an endpoint repo with "
+            "`anirss --add-repo <url>`, or one site by hand with "
+            "`anirss --add-endpoint <url>`")
 
     # If -S consumed the URL into force_url, drop -S and the URL from positional.
     if force_url is not None:
