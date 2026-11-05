@@ -25,9 +25,10 @@ def cmd_sync(qbt_cfg: QbtConfig) -> None:
     print(f"{C_GRN}OK:{C_OFF} cached {len(names)} feed name(s) at {FEEDS_CACHE_PATH}")
 
 
-def cmd_query(qbt_cfg: QbtConfig, json_format: bool) -> None:
+def cmd_query(qbt_cfg: QbtConfig, json_format: bool,
+              own_bases: list[str] | None = None) -> None:
     qbt = login_with_retry(qbt_cfg)
-    subs = list_subscriptions(qbt)
+    subs = list_subscriptions(qbt, own_bases)
 
     # Always refresh the cache as a side effect of -Q.
     write_feed_cache([r.name for r in subs])
@@ -84,7 +85,8 @@ def _resolve_remove_targets(args: list[str], qbt: QbtSession | None) -> list[str
 
 def cmd_remove(qbt_cfg: QbtConfig, args: list[str], drop_torrents: bool,
                drop_files: bool, noconfirm: bool, save_base: str,
-               local_files: bool = True) -> None:
+               local_files: bool = True,
+               own_bases: list[str] | None = None) -> None:
     if drop_files and not drop_torrents and not local_files:
         die(f"{qbt_cfg.get('name', 'this client')}'s files are not on this machine: "
             f"remove them with their torrents (-Rns), which has qBittorrent delete them")
@@ -92,7 +94,7 @@ def cmd_remove(qbt_cfg: QbtConfig, args: list[str], drop_torrents: bool,
     targets = _resolve_remove_targets(args, qbt)
     plans = plan_remove(qbt, targets, drop_torrents=drop_torrents,
                         drop_files=drop_files, save_base=save_base,
-                        local_files=local_files)
+                        local_files=local_files, own_bases=own_bases)
 
     print()
     for p in plans:
@@ -106,7 +108,12 @@ def cmd_remove(qbt_cfg: QbtConfig, args: list[str], drop_torrents: bool,
         elif drop_files and p.torrent_count_in_qb:
             print(f"  {C_YEL}Note:{C_OFF}    {p.torrent_count_in_qb} torrent(s) "
                   f"will be left in qB and will error (-n without -s)")
-        if drop_files:
+        if drop_files and not p.owns_folder:
+            # A folder the rule shares stays; only its torrents' files go (#38).
+            print(f"  {C_CYN}Files:{C_OFF}   {len(p.torrents)} torrent(s)' files in "
+                  f"{p.save_path} {C_DIM}(the folder stays; "
+                  f"{_human_bytes(p.size_bytes)}){C_OFF}")
+        elif drop_files:
             if not local_files:
                 shown = f"{p.save_path} {C_DIM}(on {qbt_cfg.get('name', 'the client')}){C_OFF}"
             elif os.path.isdir(p.save_path):

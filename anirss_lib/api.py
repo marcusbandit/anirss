@@ -59,7 +59,7 @@ from anirss_lib.qbt.actions import (
     SubscribeResult,
     validate_name,
 )
-from anirss_lib.qbt.clients import download_root, local_files, qbt_clients
+from anirss_lib.qbt.clients import download_root, local_files, own_bases, qbt_clients
 from anirss_lib.qbt.session import QbtSession, _qbt_reachable, login_with_password
 from anirss_lib.redact import redact_url
 from anirss_lib.refinement import RefineOutcome
@@ -845,8 +845,10 @@ class Anirss:
     # ---- subscriptions / torrents --------------------------------------------
 
     def subscriptions(self, *, client: str | None = None) -> list[RuleInfo]:
-        """Every qB RSS rule with torrent/file counts (`anirss -Qj`)."""
-        return self._with_qbt(actions.list_subscriptions, client)
+        """Every qB RSS rule with torrent/file counts (`anirss -Qj`). A rule
+        saving into a folder it shares counts only its own torrents (#38)."""
+        bases = own_bases(self.config, self.client(client))
+        return self._with_qbt(lambda q: actions.list_subscriptions(q, bases), client)
 
     def remove(self, names: list[str], *, drop_torrents: bool = False,
                drop_files: bool = False, hidden: bool = False,
@@ -862,12 +864,13 @@ class Anirss:
         here = local_files(c)
         roots = [download_root(self.config, c, "save_base"),
                  download_root(self.config, c, "hidden_base")]
+        bases = own_bases(self.config, c)
 
         def run(q: QbtSession) -> list[RemovePlan]:
             plans = actions.plan_remove(q, names, drop_torrents=drop_torrents,
                                         drop_files=drop_files,
                                         save_base=self._save_base(hidden, client),
-                                        local_files=here)
+                                        local_files=here, own_bases=bases)
             if drop_files:
                 # dry runs refuse too
                 actions.check_confined(plans, roots, local_files=here)
@@ -881,8 +884,13 @@ class Anirss:
     def torrents(self, *, name: str | None = None, hashes: list[str] | None = None,
                  hidden: bool = False, client: str | None = None) -> list[dict]:
         """qBittorrent's torrents (state, progress, content_path, …), all of
-        them or those of one subscription/download `name`, or by info-hash."""
-        save_path = (actions.join_save_path(self._save_base(hidden, client), validate_name(name))
-                     if name else None)
-        return self._with_qbt(lambda q: actions.list_torrents(
-            q, save_path=save_path, hashes=hashes), client)
+        them or those of one subscription/download `name`, or by info-hash.
+        A subscription's are found where its rule saves, and in a folder it
+        shares only those carrying its tag (#38)."""
+        if name:
+            name = validate_name(name)
+            base = self._save_base(hidden, client)
+            bases = own_bases(self.config, self.client(client))
+            return self._with_qbt(lambda q: actions.name_torrents(
+                q, name, base, bases, hashes=hashes), client)
+        return self._with_qbt(lambda q: actions.list_torrents(q, hashes=hashes), client)

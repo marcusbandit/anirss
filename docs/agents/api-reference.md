@@ -881,9 +881,13 @@ curl -H "Authorization: Bearer $TOKEN" $BASE/subscriptions
 ]}
 ```
 
-`torrent_count` is how many qBittorrent torrents sit under `save_path`.
-`file_count` is files on disk there, and is `0` when qBittorrent runs on
-another host.
+`torrent_count` is how many qBittorrent torrents are the subscription's, and
+`file_count` how many files on disk they hold, `0` when qBittorrent runs on
+another host. In its own folder, `<save_base>/<name>` or `<hidden_base>/<name>`,
+or under an endpoint's own `save_base`, that is everything under `save_path` but
+a torrent tagged for another rule. A rule saving anywhere else, a show's own
+folder, shares it with episodes it never downloaded and with other rules, so
+only the torrents carrying its tag `anirss:<name>` count, and their files.
 
 #### POST /subscriptions
 
@@ -927,7 +931,9 @@ Status `201`:
 ```
 
 `name` is the rule name actually used and can differ from the requested one
-(it may gain an ` @<endpoint>` suffix).
+(it may gain an ` @<endpoint>` suffix). Besides `tags`, every torrent the rule
+adds is tagged `anirss:<name>`, which is how its torrents are told apart in a
+folder it shares (qBittorrent 4.6 or later; older builds add them untagged).
 `must_contain` / `must_not_contain` are the qBittorrent rule filters;
 `must_not_contain` is `|`-joined.
 
@@ -974,12 +980,19 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
  "plans": [
    {"name": "Frieren", "feed_url": "https://...", "feed_path": "Frieren",
     "save_path": "/home/me/Downloads/Anime/Frieren",
-    "torrents": [ {...} ], "size_bytes": 12345678, "torrent_count_in_qb": 28}
+    "torrents": [ {...} ], "size_bytes": 12345678, "torrent_count_in_qb": 28,
+    "owns_folder": true}
  ]}
 ```
 
 `torrents` in a plan is populated only when `torrents` or `files` was
-requested. `feed_path` is `null` if the rule has no feed or the feed was not found.
+requested. `owns_folder` says whether `save_path` is anirss's own folder for the
+rule and holds no other rule's torrent. When it is, every torrent in it is the
+rule's and `files` deletes the folder. When it is not, a show's folder say, only the torrents tagged
+`anirss:<name>` are the rule's: `torrents` removes those alone, `files` deletes
+only their files, and the folder and everything else in it stay. A rule made
+before anirss tagged its torrents has none it can tell apart there, so nothing
+in the folder is touched. Removing a rule with `torrents` also deletes its tag. `feed_path` is `null` if the rule has no feed or the feed was not found.
 `size_bytes` is the size of the affected content. Always do a `dry_run` first
 when exposing `files` to end users.
 
@@ -1038,9 +1051,11 @@ Status `201`, response shaped like `/downloads` (`AddResult`).
 
 #### GET /torrents
 
-Query parameters (all optional): `name` (only torrents saved under
-`<save_base>/<name>`, i.e. one subscription or download), `hashes`
-(`|`-separated info-hashes), `hidden` (look under `hidden_base` for `name`).
+Query parameters (all optional): `name` (one subscription's or download's
+torrents: a rule of that name's, in the folder it saves into, only those tagged
+`anirss:<name>` when that folder is not its own; else those saved under
+`<save_base>/<name>`), `hashes` (`|`-separated info-hashes), `hidden` (look
+under `hidden_base` for a `name` with no rule).
 
 ```
 curl -H "Authorization: Bearer $TOKEN" "$BASE/torrents?name=Frieren"
@@ -1155,7 +1170,7 @@ keep their order (`groups[].members` are indexes).
 | `doctor.Check` | `id` (stable: `qbt:<client>`, `qbt_login:<client>`, `qbt_rss:<client>`, `endpoints`, `endpoint:<name>`, `repo:<url>`, `downloads:<key>`, ...), `title`, `status` (`ok`, `warn`, `fail`, `skip`), `detail`, `fix` |
 | `AddResult` | `count`, `save_path`, `tags`, `hashes` |
 | `RuleInfo` | `name`, `feed_url`, `save_path`, `rule_enabled`, `torrent_count`, `file_count` |
-| `RemovePlan` | `name`, `feed_url`, `feed_path`, `save_path`, `torrents`, `size_bytes`, `torrent_count_in_qb` |
+| `RemovePlan` | `name`, `feed_url`, `feed_path`, `save_path`, `torrents`, `size_bytes`, `torrent_count_in_qb`, `owns_folder` |
 | `RefineOutcome` (Python) | `applied`, `query`, `items`, `mode`, `previous_count`, `reason`, property `delta` |
 | `SearchResult` (Python) | `query`, `endpoint`, `items`, `tried`, property `fell_back` |
 

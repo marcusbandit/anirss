@@ -96,19 +96,21 @@ def test_do_subscribe_puts_tags_in_torrent_params():
     actions.do_subscribe(qbt, "http://feed", "Show", "/tmp/save",
                          tags=["Anime", "anirss"])
     params = _rule_from(qbt)["torrentParams"]
-    assert params["tags"] == ["Anime", "anirss"]
+    assert params["tags"] == ["Anime", "anirss", "anirss:Show"]
     # torrentParams supersedes the flat savePath, so it has to carry the path
     # and pin manual torrent management or qB would apply its global TMM.
     assert params["save_path"] == "/tmp/save/Show"
     assert params["use_auto_tmm"] is False
 
 
-def test_do_subscribe_without_tags_keeps_legacy_rule_shape():
+def test_do_subscribe_without_tags_still_tags_the_rules_own_torrents():
     qbt = RecordingQbt()
     actions.do_subscribe(qbt, "http://feed", "Show", "/tmp/save")
     rule = _rule_from(qbt)
-    assert "torrentParams" not in rule
+    # The flat keys stay for qBittorrent before 4.6, which ignores the block.
     assert rule["savePath"] == "/tmp/save/Show"
+    assert rule["torrentParams"] == {"save_path": "/tmp/save/Show",
+                                     "use_auto_tmm": False, "tags": ["anirss:Show"]}
 
 
 def test_a_rule_given_a_save_path_saves_there_and_not_under_the_base():
