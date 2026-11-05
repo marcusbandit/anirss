@@ -13,8 +13,8 @@ from anirss_lib.types import Item
 
 VALID_KINDS = ("nyaa", "rss")
 
-NO_ENDPOINTS = ("no search endpoints configured: add one under [[endpoint]] in "
-                "config.toml, or from an app that uses anirss")
+NO_ENDPOINTS = ("no search endpoints configured: install one from an endpoint "
+                "repo, or add one by hand")
 
 
 class Endpoint(NamedTuple):

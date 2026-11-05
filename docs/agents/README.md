@@ -79,7 +79,11 @@ environment, then poll `GET /api/v1/health` until it returns 200.
    `[server].cors_origins` for browser clients. qBittorrent's password comes
    from `ANIRSS_QBT_PASSWORD` or the one the CLI saved. Done when
    `GET /api/v1/health` returns 200 and `GET /api/v1/endpoints` with the
-   bearer token returns 200. Details:
+   bearer token returns 200. A fresh anirss has no endpoints: let the user
+   paste an endpoint repo URL (`POST /repos`, show its fingerprint, then
+   `POST /repos/trust`) and install from it (`GET /repos/endpoints`,
+   `POST /repos/install`), or add one by hand (`POST /endpoints`). Details:
+   [Endpoint repos](api-reference.md#endpoint-repos),
    [Starting the server](api-reference.md#starting-the-server),
    [Authentication](api-reference.md#authentication-and-token-resolution),
    [CORS](api-reference.md#cors).

@@ -14,6 +14,7 @@ import re
 import shutil
 import tempfile
 import tomllib
+import urllib.parse
 from pathlib import Path
 
 from anirss_lib.endpoints import load_endpoints
@@ -226,3 +227,84 @@ def remove_endpoint(path: Path, name: str, implicit: list[dict] | None = None) -
         del lines[start - 1]
     expected = [e for e in current if e.get("name") != name]
     _write(path, "".join(lines), expected)
+
+
+# ---- an endpoint added by hand, from a pasted address --------------------
+
+_NAME_PREFIXES = ("www", "rss", "api", "feed", "feeds", "m")
+
+
+def name_from_url(url: str, taken: list[str] | tuple[str, ...] = ()) -> str:
+    """A short endpoint name from an address's host: `rss.example.org`
+    becomes `example`, a local address `local`. Gets `-2`, `-3`, ... when
+    the name is taken."""
+    host = (urllib.parse.urlsplit(url.replace("{query}", "q")).hostname or "").lower()
+    labels = [x for x in host.split(".") if x]
+    if not labels or host == "localhost" or all(x.isdigit() for x in labels) \
+            or ":" in host:
+        base = "local"
+    else:
+        while len(labels) > 2 and labels[0] in _NAME_PREFIXES:
+            labels = labels[1:]
+        base = labels[0] if len(labels) > 1 else host
+    base = re.sub(r"[^A-Za-z0-9._-]", "-", base).strip("-.") or "endpoint"
+    name, n = base, 2
+    while name in taken:
+        name, n = f"{base}-{n}", n + 1
+    return name
+
+
+def nyaa_parts(url: str) -> tuple[str, str, str]:
+    """(base, category, filter) of a nyaa-style site's address, a search
+    page's included: `https://site/?f=2&c=1_2&q=x` gives
+    (`https://site/`, `1_2`, `2`)."""
+    parts = urllib.parse.urlsplit(url.strip())
+    params = urllib.parse.parse_qs(parts.query)
+    base = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path or "/", "", ""))
+    return base, (params.get("c") or ["1_0"])[0], (params.get("f") or ["0"])[0]
+
+
+def is_nyaa_style(base: str, fetch=None, timeout: float = 10.0) -> bool:
+    """Whether `base` runs nyaa-style software: its RSS search answers with
+    the nyaa feed namespace. Raises FetchError when it can't be reached."""
+    from anirss_lib import nyaa
+    fetch = fetch or nyaa.fetch_bytes
+    qs = urllib.parse.urlencode({"page": "rss", "q": "a", "c": "0_0", "f": "0"})
+    return b"/xmlns/nyaa" in fetch(f"{base}?{qs}", "endpoint", timeout)
+
+
+def put_query(url: str, words: str) -> str:
+    """`url` with the search `words` it holds replaced by `{query}`, for an
+    address pasted from a search the user ran on the site. Raises
+    ValidationError when the words are not in it."""
+    words = words.strip()
+    if not words:
+        raise ValidationError("type the words you searched for")
+    forms = [words, urllib.parse.quote_plus(words), urllib.parse.quote(words),
+             words.replace(" ", "+"), words.replace(" ", "%20")]
+    for form in forms:
+        at = url.lower().find(form.lower())
+        if at >= 0:
+            return url[:at] + "{query}" + url[at + len(form):]
+    raise ValidationError(f"{words!r} is not in that address")
+
+
+def guess_spec(url: str, *, name: str | None = None, taken: tuple[str, ...] = (),
+               fetch=None) -> dict:
+    """The endpoint a pasted address stands for: `rss` when it holds
+    `{query}`, `nyaa` when the site answers like nyaa-style software.
+    Raises ValidationError when it is neither (put_query() fixes that) and
+    FetchError when the site can't be reached to tell."""
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        raise ValidationError("an endpoint address starts with http:// or https://")
+    if "{query}" in url:
+        spec = {"kind": "rss", "url": url}
+    else:
+        base, category, filt = nyaa_parts(url)
+        if not is_nyaa_style(base, fetch):
+            raise ValidationError("that address holds no {query} and the site does "
+                                  "not answer like a nyaa-style one")
+        spec = {"kind": "nyaa", "url": base, "category": category, "filter": filt}
+    spec["name"] = name or name_from_url(url, taken)
+    return check_spec(spec)

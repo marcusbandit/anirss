@@ -37,10 +37,26 @@ ops=(
     '--migrate-config:append new default config sections'
     '--serve:serve the JSON HTTP API (--host, --port)'
     '--refresh-on-demand:let qBittorrent poll on-demand endpoint feeds'
+    '--add-repo:trust an endpoint repo by its URL'
+    '--repos:check repos for updates and list what they offer'
+    '--remove-repo:stop trusting an endpoint repo'
+    '--install:install an endpoint from a trusted repo'
+    '--update-endpoints:move installed endpoints to their newest version'
+    '--endpoints:list configured endpoints and where they came from'
+    '--add-endpoint:add one search site by hand from its address'
+    '--remove-endpoint:remove a configured endpoint'
     '--version:print version'
     '-h:help'
     '--help:help'
 )
+
+# After -e / --endpoint: the configured endpoint names.
+if [[ $words[CURRENT-1] == (-e|--endpoint) ]]; then
+    local -a eps
+    eps=("${(@f)$(anirss --_endpoints 2>/dev/null)}")
+    _wanted endpoints expl 'endpoint' compadd -a eps
+    return
+fi
 
 # After -c / --client: the configured client names.
 if [[ $words[CURRENT-1] == (-c|--client) ]]; then
@@ -82,5 +98,31 @@ case $words[op] in
         ;;
     (-T|-Th)
         _files -g '*.torrent'
+        ;;
+    (--install)
+        if [[ $words[CURRENT-1] == --repo ]]; then
+            local -a rs
+            rs=("${(@f)$(anirss --_repos 2>/dev/null)}")
+            _wanted repos expl 'repo' compadd -a rs
+        elif [[ $words[CURRENT-1] != --name ]]; then
+            local -a offers
+            offers=("${(@f)$(anirss --_offers 2>/dev/null)}")
+            _alternative \
+                'offers:endpoint to install:compadd -a offers' \
+                'flags:flag:((--repo\:"pick the repo when two offer the same id" --name\:"install under another name"))'
+        fi
+        ;;
+    (--remove-endpoint)
+        local -a eps
+        eps=("${(@f)$(anirss --_endpoints 2>/dev/null)}")
+        _wanted endpoints expl 'endpoint' compadd -a eps
+        ;;
+    (--remove-repo)
+        local -a rs
+        rs=("${(@f)$(anirss --_repos 2>/dev/null)}")
+        _wanted repos expl 'repo' compadd -a rs
+        ;;
+    (--add-repo|--add-endpoint)
+        _message -r 'the address (URL) to add'
         ;;
 esac

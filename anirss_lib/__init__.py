@@ -1,4 +1,4 @@
-"""anirss - search nyaa.si, then either subscribe (RSS rule) or download now in qBittorrent.
+"""anirss - search the endpoints you add, then subscribe (RSS rule) or download now in qBittorrent.
 
 Usage:
     anirss                        Prompt for a search.
@@ -34,6 +34,19 @@ Usage:
     anirss -Rns <name>...         + everything (clean uninstall).
     anirss --noconfirm            Skip the y/N prompt for -R*.
 
+Endpoints (anirss ships with none; add them from a repo or by hand):
+    anirss --add-repo <url>       Trust an endpoint repo: checks its signature,
+                                  shows its key, asks first. (AniBeam's repos work.)
+    anirss --repos                Check repos for updates; list what they offer.
+    anirss --install [id]         Install an endpoint from a trusted repo; asks
+                                  for any key or token it needs. No id: pick one.
+    anirss --update-endpoints     Move installed endpoints to their newest version.
+    anirss --remove-repo <name>   Stop trusting a repo (its endpoints stay).
+    anirss --endpoints            List endpoints in the order they are tried.
+    anirss --add-endpoint <url>   Add one site by hand: a nyaa-style site, or an
+                                  RSS search address with {query} in it.
+    anirss --remove-endpoint <name>
+
 Non-interactive (skip fzf, skip Name prompt):
     --subscribe                   Subscribe to query/URL without showing the action menu.
     --download-all                Download every matching item.
@@ -60,8 +73,8 @@ Backend (for frontends and other apps; see docs/agents/):
     Python: `from anirss_lib.api import Anirss`.
 
 Config: ~/.config/anirss/config.toml (auto-created on first run).
-State:  ~/.local/state/anirss/   (feeds.txt cache, qbt.sid session cookie, anirss.log;
-                                  a named client's session is qbt-<name>.sid)
+State:  ~/.local/state/anirss/   (feeds.txt cache, qbt.sid session cookie, anirss.log,
+                                  repos.json; a named client's session is qbt-<name>.sid)
 """
 
 __version__ = "0.6.1"

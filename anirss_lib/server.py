@@ -27,7 +27,10 @@ from anirss_lib.api import (
     Anirss,
     client_info,
     endpoint_info,
+    index_info,
     item_from_dict,
+    offer_info,
+    repo_info,
     to_jsonable,
 )
 from anirss_lib.config import STATE_DIR
@@ -39,6 +42,7 @@ from anirss_lib.errors import (
     NotFoundError,
     QbtAuthError,
     QbtError,
+    RepoError,
     ValidationError,
 )
 from anirss_lib.logging import log
@@ -112,6 +116,16 @@ def _str_list(body: dict, key: str) -> list[str] | None:
     return v
 
 
+def _credentials(body: dict) -> dict[str, str]:
+    v = body.get("credentials")
+    if v is None:
+        return {}
+    if not isinstance(v, dict) or not all(isinstance(k, str) and isinstance(x, str)
+                                          for k, x in v.items()):
+        raise ValidationError("`credentials` must be an object of strings")
+    return v
+
+
 def _items(body: dict, *, required: bool = True):
     raw = body.get("items")
     if raw is None and not required:
@@ -147,6 +161,7 @@ _ERRORS: list[tuple[type, int, str]] = [
     (QbtError, 502, "qbt_error"),
     (FetchError, 502, "fetch_error"),
     (NoEndpointsError, 409, "no_endpoints"),
+    (RepoError, 422, "repo_error"),
     (ConfigError, 500, "config_error"),
     (AnirssError, 400, "error"),
 ]
@@ -188,11 +203,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def _error(self, status: int, kind: str, message: str) -> None:
+    def _error(self, status: int, kind: str, message: str,
+               extra: dict | None = None) -> None:
         # An error can be sent before the request body was read; drop the
         # connection so unread body bytes aren't parsed as the next request.
         self.close_connection = True
-        self._send(status, {"error": {"type": kind, "message": message}})
+        self._send(status, {"error": {"type": kind, "message": message,
+                                      **(extra or {})}})
 
     def send_error(self, code: int, message: str | None = None,
                    explain: str | None = None) -> None:
@@ -301,7 +318,10 @@ class Handler(BaseHTTPRequestHandler):
         except BaseException as e:  # noqa: BLE001 - a request must never kill its thread silently
             for cls, status, kind in _ERRORS:
                 if isinstance(e, cls):
-                    self._error(status, kind, str(e))
+                    # A repo error also says which check failed, so a
+                    # frontend can tell a changed key from a bad file.
+                    extra = {"code": e.code} if isinstance(e, RepoError) else None
+                    self._error(status, kind, str(e), extra)
                     return
             log("ERROR", f"api {method} {self.path}: {traceback.format_exc()}")
             try:
@@ -331,6 +351,12 @@ class Handler(BaseHTTPRequestHandler):
             "/movie": {"POST": self.h_movie},
             "/torrents": {"GET": self.h_torrents},
             "/torrents/upload": {"POST": self.h_upload},
+            "/repos": {"GET": self.h_repos, "POST": self.h_repo_preview},
+            "/repos/trust": {"POST": self.h_repo_trust},
+            "/repos/remove": {"POST": self.h_repo_remove},
+            "/repos/endpoints": {"GET": self.h_repo_endpoints},
+            "/repos/install": {"POST": self.h_repo_install},
+            "/repos/update": {"POST": self.h_repo_update},
         }
         if route in table:
             fn = table[route].get(method)
@@ -369,6 +395,40 @@ class Handler(BaseHTTPRequestHandler):
     def h_endpoint_remove(self, q, name):
         self.ani.remove_endpoint(name)
         return 200, {"removed": name}
+
+    def h_repos(self, q, _):
+        repos = self.ani.repos(refresh=_bool(q.get("refresh")))
+        return 200, {"repos": [repo_info(r) for r in repos]}
+
+    def h_repo_preview(self, q, _):
+        url = _str(self._json_body(), "url", required=True) or ""
+        return 200, {"repo": index_info(url, self.ani.preview_repo(url))}
+
+    def h_repo_trust(self, q, _):
+        b = self._json_body()
+        repo = self.ani.trust_repo(_str(b, "url", required=True) or "",
+                                   _str(b, "key", required=True) or "")
+        return 201, {"repo": repo_info(repo)}
+
+    def h_repo_remove(self, q, _):
+        repo = self.ani.remove_repo(_str(self._json_body(), "url", required=True) or "")
+        return 200, {"removed": repo.url}
+
+    def h_repo_endpoints(self, q, _):
+        return 200, {"endpoints": [offer_info(o) for o in self.ani.repo_endpoints()]}
+
+    def h_repo_install(self, q, _):
+        b = self._json_body()
+        ep = self.ani.install_endpoint(_str(b, "id", required=True) or "",
+                                       _credentials(b), repo=_str(b, "repo"),
+                                       name=_str(b, "name"))
+        return 201, {"endpoint": endpoint_info(ep)}
+
+    def h_repo_update(self, q, _):
+        b = self._json_body()
+        creds = _credentials(b) if b.get("credentials") is not None else None
+        ep = self.ani.update_endpoint(_str(b, "name", required=True) or "", creds)
+        return 200, {"endpoint": endpoint_info(ep)}
 
     def h_search_get(self, q, _):
         res = self.ani.search(q.get("q", ""), q.get("endpoint") or None,
