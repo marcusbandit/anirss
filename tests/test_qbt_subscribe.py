@@ -1,4 +1,5 @@
 import json
+import os
 
 from anirss_lib.errors import QbtError
 from anirss_lib.qbt import actions
@@ -99,7 +100,7 @@ def test_do_subscribe_puts_tags_in_torrent_params():
     assert params["tags"] == ["Anime", "anirss"]
     # torrentParams supersedes the flat savePath, so it has to carry the path
     # and pin manual torrent management or qB would apply its global TMM.
-    assert params["save_path"] == "/tmp/save/Show"
+    assert params["save_path"] == os.path.join("/tmp/save", "Show")
     assert params["use_auto_tmm"] is False
 
 
@@ -108,7 +109,7 @@ def test_do_subscribe_without_tags_keeps_legacy_rule_shape():
     actions.do_subscribe(qbt, "http://feed", "Show", "/tmp/save")
     rule = _rule_from(qbt)
     assert "torrentParams" not in rule
-    assert rule["savePath"] == "/tmp/save/Show"
+    assert rule["savePath"] == os.path.join("/tmp/save", "Show")
 
 
 class PrefsQbt(RecordingQbt):

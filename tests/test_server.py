@@ -9,6 +9,7 @@ import http.client
 import json
 import os
 import stat
+import sys
 import threading
 import urllib.parse
 
@@ -1074,6 +1075,7 @@ def test_resolve_token_saved_file(token_paths):
     assert server.resolve_token("", None) == ("saved-token", str(server.TOKEN_PATH))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX mode bits")
 def test_resolve_token_generates_and_saves_0600(token_paths):
     token, source = server.resolve_token("", None)
     assert len(token) >= 32
@@ -1084,6 +1086,7 @@ def test_resolve_token_generates_and_saves_0600(token_paths):
     assert server.resolve_token("", None) == (token, str(server.TOKEN_PATH))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX mode bits")
 def test_resolve_token_tightens_existing_empty_file_mode(token_paths):
     server.TOKEN_PATH.parent.mkdir(parents=True)
     server.TOKEN_PATH.write_text("")

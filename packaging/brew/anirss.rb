@@ -1,5 +1,5 @@
 class Anirss < Formula
-  desc "Search nyaa.si and hand the result to qBittorrent"
+  desc "Search the endpoints you add and hand releases to qBittorrent"
   homepage "https://github.com/marcusbandit/anirss"
   url "https://github.com/marcusbandit/anirss/archive/refs/tags/v0.5.0.tar.gz"
   sha256 "9b786cea875ae30077b77f6da86ca4a36e84b537f8a70a85100712d62abf8143"

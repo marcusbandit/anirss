@@ -11,7 +11,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "anirss"
 dynamic = ["version"]
-description = "Search nyaa.si and other anime RSS endpoints, then subscribe or download through qBittorrent. CLI, Python library, and JSON HTTP API."
+description = "Find anime releases on the search endpoints you add (signed endpoint repos, nyaa-style sites, RSS feeds), then subscribe or download through qBittorrent and watch in any player. CLI, Python library, and JSON HTTP API."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

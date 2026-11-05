@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -1731,6 +1732,7 @@ def test_remove_refuses_dotdot_escape(make, tmp_path, outside_dir):
     assert e.qbt.posts == [] and outside_dir.exists()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin rights on Windows")
 def test_remove_refuses_symlink_escape(make, tmp_path, outside_dir):
     base = tmp_path / "anime"
     base.mkdir()

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.13"]
+        exclude:
+          # The oldest supported Python on one OS is enough.
+          - os: macos-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.11"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+      - name: Tests
+        run: uv run --python ${{ matrix.python }} --with pytest pytest -q tests test_anirss.py
+      - name: Launcher runs
+        run: uv run --python ${{ matrix.python }} python anirss --version
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Completions parse
+        run: |
+          sudo apt-get install -y -q zsh >/dev/null
+          zsh -n completions/_anirss
+          bash -n completions/anirss.bash

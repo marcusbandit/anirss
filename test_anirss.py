@@ -6,6 +6,7 @@ Run with: uvx pytest test_anirss.py
 from __future__ import annotations
 
 import http.cookiejar
+import sys
 import urllib.request
 
 import pytest
@@ -562,6 +563,7 @@ def test_password_save_load_roundtrip(tmp_path, monkeypatch):
     assert _session._load_password() == "hunter2"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX mode bits")
 def test_password_file_is_mode_600(tmp_path, monkeypatch):
     import os
     import stat
@@ -731,6 +733,7 @@ def test_missing_qbt_binary_is_reported():
 
 # -------- process title --------
 
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
 def test_proctitle_renames_the_process():
     import pathlib
 
@@ -851,15 +854,18 @@ def test_extract_nyaa_query_missing():
 
 # -------- _norm_path --------
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics")
 def test_norm_path_strips_trailing_slash():
     assert _norm_path("/home/user/Anime/Frieren/") == "/home/user/Anime/Frieren"
     assert _norm_path("/home/user/Anime/Frieren") == "/home/user/Anime/Frieren"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics")
 def test_norm_path_collapses_redundant_slashes():
     assert _norm_path("/home//user///Anime/") == "/home/user/Anime"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics")
 def test_norm_path_expands_user(monkeypatch):
     monkeypatch.setenv("HOME", "/home/x")
     assert _norm_path("~/Anime/Frieren/") == "/home/x/Anime/Frieren"
