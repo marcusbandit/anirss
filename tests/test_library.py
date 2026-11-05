@@ -18,6 +18,9 @@ from anirss_lib.errors import NotFoundError, ValidationError
     ("Show - 12.5 [1080p].mkv", (None, 12.5)),
     ("[Group] Show S2 - 03 [1080p].mkv", (2, 3.0)),
     ("Movie (2023) [1080p].mkv", (None, None)),
+    ("[Group] Mob Psycho 100 [05][1080p].mkv", (None, 5.0)),
+    ("[Group] 86 Eighty Six [05].mkv", (None, 5.0)),
+    ("Mob Psycho 100 - 07 [1080p].mkv", (None, 7.0)),
 ])
 def test_episode_numbers_come_from_the_release_names(name, expected):
     assert library.parse_episode(name) == expected
@@ -110,3 +113,55 @@ def test_status_splits_what_is_coming_from_what_finished_lately():
     assert [t["name"] for t in act.finished] == ["d", "c"]
     assert library.show_of(torrents[0], "/dl/Anime") == "Frieren"
     assert library.show_of(torrents[3], "/dl/Anime") == ""
+
+
+def test_a_symlinked_library_still_skips_an_unfinished_batch_folder(tmp_path):
+    real = tmp_path / "real"
+    _show(real, ["Show - 01.mkv", "Batch/Show - 02.mkv"], "Show")
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    folder = link / "Anime" / "Show"
+    eps = library.episodes_in(str(folder), skip={str(real / "Anime" / "Show" / "Batch")})
+    assert [e.number for e in eps] == [1.0]
+
+
+def test_a_dangling_link_is_left_out_not_a_crash(tmp_path):
+    folder = _show(tmp_path, ["Show - 01.mkv"], "Show")
+    (folder / "Show - 02.mkv").symlink_to(tmp_path / "gone.mkv")
+    (show,) = library.shows(str(tmp_path / "Anime"))
+    assert [e.number for e in show.episodes] == [1.0]
+    assert library.show_names([str(tmp_path / "Anime"), str(tmp_path / "missing")]) == ["Show"]
+
+
+def test_labels_come_from_every_show_root():
+    t = {"save_path": "/srv/hidden/Show"}
+    assert library.show_of(t, ["/dl/Anime", "/srv/hidden"]) == "Show"
+    assert library.show_of({"save_path": "/dl/Movies"}, ["/dl/Anime"]) == ""
+
+
+def test_status_refuses_a_window_of_zero_days(capsys):
+    from anirss_lib.cli import library as library_cli
+    with pytest.raises(SystemExit):
+        library_cli.cmd_status({}, ["--days=0"])
+    assert "above 0" in capsys.readouterr().err
+
+
+def test_play_without_qbittorrent_leaves_out_files_still_being_written(tmp_path, monkeypatch, capsys):
+    from anirss_lib.cli import library as library_cli
+    folder = _show(tmp_path, ["Show - 01.mkv", "Show - 02.mkv"], "Show")
+    old = 1_000_000_000
+    os.utime(folder / "Show - 01.mkv", (old, old))      # long finished
+    cfg = {"qbittorrent": {"name": "default", "url": "http://localhost:1"},
+           "downloads": {"save_base": str(tmp_path / "Anime"),
+                         "movie_path": str(tmp_path / "Movies"),
+                         "hidden_base": str(tmp_path / "Hidden")},
+           "endpoint": [], "player": {"command": "true"}}
+    monkeypatch.setattr(library_cli, "_incomplete", lambda cfg, roots: None)
+    opened = []
+    monkeypatch.setattr(library, "play", lambda path, cmd: opened.append(path) or "true")
+    library.mark_played(library.shows(str(tmp_path / "Anime"))[0],
+                        library.episodes_in(str(folder))[0])
+    library_cli.cmd_play(cfg, ["show"])     # 02 is fresh, so it is left out
+    out = capsys.readouterr().out
+    assert opened == []
+    assert "two minutes" in out and "caught up" in out

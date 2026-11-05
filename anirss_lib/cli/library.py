@@ -22,11 +22,39 @@ def _session(cfg, *, interactive: bool):
     return login_with_password(cfg["qbittorrent"], pw, autostart=False, notify=None)
 
 
-def _roots(cfg) -> dict[str, str]:
+def _roots(cfg) -> tuple[list[str], list[str]]:
+    """(show roots, movie roots): the client's own (or [downloads]) and every
+    endpoint's override, since an endpoint may save somewhere of its own."""
+    from anirss_lib.endpoints import load_endpoints
     from anirss_lib.qbt.clients import download_root
     client = cfg["qbittorrent"]
-    return {k: download_root(cfg, client, k)
-            for k in ("save_base", "movie_path", "hidden_base")}
+    shows = [download_root(cfg, client, "save_base"), download_root(cfg, client, "hidden_base")]
+    movies = [download_root(cfg, client, "movie_path")]
+    try:
+        eps = load_endpoints(cfg)
+    except AnirssError:
+        eps = []
+    # A client's own roots win over an endpoint's (see main._save_base_for).
+    if not client.get("save_base"):
+        shows += [ep.save_base for ep in eps if ep.save_base]
+    if not client.get("movie_path"):
+        movies += [ep.movie_path for ep in eps if ep.movie_path]
+    return _dedup(shows), _dedup(movies)
+
+
+def _dedup(paths: list[str]) -> list[str]:
+    return list(dict.fromkeys(p for p in paths if p))
+
+
+def _label(t: dict, shows: list[str], movies: list[str]) -> str:
+    """The show a torrent belongs to, "movie" under a movie root, else ""."""
+    return library.show_of(t, shows) or ("movie" if _under(t, movies) else "")
+
+
+def _under(t: dict, roots: list[str]) -> bool:
+    sp = os.path.normpath(t.get("save_path") or "")
+    return any(sp == os.path.normpath(r) or sp.startswith(os.path.normpath(r) + os.sep)
+               for r in roots)
 
 
 # ---- --play --------------------------------------------------------------------
@@ -44,16 +72,39 @@ def _parse(args: list[str]) -> tuple[str, bool]:
     return " ".join(words).strip(), pick
 
 
-def _incomplete(cfg) -> set[str]:
-    """What qBittorrent has not finished, when it can say without asking."""
+def _incomplete(cfg, roots: list[str]) -> set[str] | None:
+    """What qBittorrent has not finished under `roots`. Asks for the
+    password when a person is there and nothing saved works; None when
+    qBittorrent can't be asked at all."""
+    from anirss_lib.errors import QbtAuthError
     from anirss_lib.qbt.actions import list_torrents
     try:
-        qbt = _session(cfg, interactive=False)
+        try:
+            qbt = _session(cfg, interactive=False)
+        except QbtAuthError:
+            if not sys.stdin.isatty():
+                raise
+            qbt = _session(cfg, interactive=True)
         torrents = list_torrents(qbt)
     except (AnirssError, OSError):
-        return set()
-    base = _roots(cfg)["save_base"]
-    return library.incomplete_paths(torrents, base)
+        return None
+    out: set[str] = set()
+    for root in roots:
+        out |= library.incomplete_paths(torrents, root)
+    return out
+
+
+# A file changed this recently may still be written, when qBittorrent
+# can't say.
+_FRESH_SECONDS = 120
+
+
+def _fresh_files(roots: list[str]) -> set[str]:
+    now = time.time()
+    out = set()
+    for s in library.shows_in(roots):
+        out |= {e.path for e in s.episodes if now - library._mtime(e.path) < _FRESH_SECONDS}
+    return out
 
 
 def cmd_play(cfg, args: list[str]) -> None:
@@ -65,31 +116,37 @@ def cmd_play(cfg, args: list[str]) -> None:
         die(f"{client.get('name') or 'this qBittorrent'} keeps its files on another "
             f"machine, so there is nothing here to play. Set local_files = true in its "
             f"[[qbittorrent.client]] block if that folder is mounted here.")
-    base = _roots(cfg)["save_base"]
-    all_shows = library.shows(base, skip=_incomplete(cfg))
+    roots, _movies = _roots(cfg)
+    skip = _incomplete(cfg, roots)
+    if skip is None:
+        print(f"{C_YEL}!{C_OFF} {C_DIM}qBittorrent can't be asked what is still "
+              f"downloading; files changed in the last two minutes are left out.{C_OFF}")
+        skip = _fresh_files(roots)
+    all_shows = library.shows_in(roots, skip=skip)
     if not all_shows:
-        die(f"nothing downloaded yet in {short_home(base)}. Subscribe to a show or "
+        die(f"nothing downloaded yet in {short_home(roots[0])}. Subscribe to a show or "
             f"download one: anirss <show name>")
+    played = library.load_played()
     try:
         if query:
             show = library.find_show(all_shows, query)
         else:
             labels = []
             for s in all_shows:
-                nxt = library.next_episode(s)
+                nxt = library.next_episode(s, played=played)
                 state = f"next {nxt.label}" if nxt else "caught up"
                 labels.append(f"{s.name}  {C_DIM}{len(s.episodes)} episodes · {state}{C_OFF}")
             i = choose(labels, "Pick a show to play")
             if i is None:
                 return
             show = all_shows[i]
-        ep = library.next_episode(show)
+        ep = library.next_episode(show, played=played)
         if pick or (ep is None and not query):
-            ep = _pick_episode(show, choose)
+            ep = _pick_episode(show, choose, played)
             if ep is None:
                 return
         elif ep is None:
-            last = library.last_played(show)
+            last = library.last_played(show, played=played)
             print(f"{C_GRN}✓{C_OFF} You're caught up on {C_BLD}{show.name}{C_OFF}"
                   f"{f' (last played: {os.path.basename(last)})' if last else ''}.")
             print(f"  {C_DIM}Pick one to watch again: anirss --play "
@@ -106,10 +163,8 @@ def cmd_play(cfg, args: list[str]) -> None:
         print(f"  {C_DIM}next time: {after.label}{C_OFF}")
 
 
-def _pick_episode(show, choose):
-    last = library.last_played(show)
-    rels = [os.path.relpath(e.path, show.path) for e in show.episodes]
-    upto = rels.index(last) if last in rels else -1
+def _pick_episode(show, choose, played: dict):
+    upto = library.played_upto(show, played=played)
     labels = []
     for i, e in enumerate(show.episodes):
         mark = f"{C_GRN}✓{C_OFF}" if i <= upto else (f"{C_YEL}▶{C_OFF}" if i == upto + 1 else " ")
@@ -173,17 +228,19 @@ def cmd_status(cfg, args: list[str]) -> None:
             try:
                 days = float(a.split("=", 1)[1])
             except ValueError:
-                die(f"--days takes a number, got {a.split('=', 1)[1]!r}")
+                days = -1
+            if not days > 0:
+                die(f"--days takes a number of days above 0, got {a.split('=', 1)[1]!r}")
         else:
             die(f"unknown flag for --status: {a}")
     qbt = _session(cfg, interactive=sys.stdin.isatty())
-    roots = _roots(cfg)
-    act = library.activity(list_torrents(qbt), list(roots.values()), days=days)
+    show_roots, movie_roots = _roots(cfg)
+    act = library.activity(list_torrents(qbt), show_roots + movie_roots, days=days)
     now = time.time()
     cols = terminal.get_size().columns
     shown = act.downloading + act.finished[:15]
-    show_w = min(24, max((len(library.show_of(t, roots["save_base"]) or "movie")
-                          for t in shown), default=5))
+    show_w = min(24, max((len(_label(t, show_roots, movie_roots)) for t in shown),
+                         default=5))
     # Downloading rows: bar, percent and state take 41 columns before the name.
     name_w = max(16, min(70, cols - 41 - 2 - show_w - 1))
     done_w = max(16, min(90, cols - 14 - 2 - show_w - 1))
@@ -195,17 +252,18 @@ def cmd_status(cfg, args: list[str]) -> None:
             if state is None:
                 speed = f"{_human_bytes(t.get('dlspeed') or 0)}/s"
                 state = f"{speed:>10}  {_eta(t.get('eta')):>7}"
-            show = _cut(library.show_of(t, roots["save_base"]) or "movie", show_w)
+            show = _cut(_label(t, show_roots, movie_roots), show_w)
             print(f"  {_bar(p)} {p * 100:3.0f}%  {state:<19}  "
                   f"{_cut(t.get('name') or '', name_w):<{name_w}}  {C_CYN}{show}{C_OFF}")
     else:
         print(f"{C_DIM}Nothing downloading right now.{C_OFF}")
     print()
-    span = "today" if days < 1.01 else f"in the last {days:g} days"
+    span = ("in the last 24 hours" if days == 1 else
+            f"in the last {days * 24:g} hours" if days < 1 else f"in the last {days:g} days")
     if act.finished:
         print(f"{C_BLD}Finished {span}{C_OFF} {C_DIM}({len(act.finished)}){C_OFF}")
         for t in act.finished[:15]:
-            show = _cut(library.show_of(t, roots["save_base"]) or "movie", show_w)
+            show = _cut(_label(t, show_roots, movie_roots), show_w)
             print(f"  {C_DIM}{_ago(t.get('completion_on') or 0, now):<11}{C_OFF} "
                   f"{_cut(t.get('name') or '', done_w):<{done_w}}  {C_CYN}{show}{C_OFF}")
         if len(act.finished) > 15:

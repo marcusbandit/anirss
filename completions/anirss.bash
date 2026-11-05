@@ -61,7 +61,9 @@ _anirss() {
             COMPREPLY=( $(compgen -W "--no-search" -- "$cur") )
             ;;
         --play)
-            _anirss_lines < <(anirss --_shows 2>/dev/null; echo --pick)
+            local cflag=()
+            [[ ${words[1]} == -c || ${words[1]} == --client ]] && cflag=(-c "${words[2]}")
+            _anirss_lines < <(anirss "${cflag[@]}" --_shows 2>/dev/null; echo --pick)
             ;;
         --status)
             COMPREPLY=( $(compgen -W "--days=1 --days=7 --days=30" -- "$cur") )

@@ -34,7 +34,8 @@ PLAYERS = ("mpv", "vlc", "celluloid", "haruna", "smplayer", "mplayer")
 _SEASON_EP = re.compile(r"\b[Ss](\d{1,2})\s?[Ee](\d{1,4}(?:\.\d)?)(?:v\d+)?\b")
 _DASH_EP = re.compile(r"\s-\s(\d{1,4}(?:\.\d)?)(?:v\d+)?(?=[\s\[\(._]|$)")
 _WORD_EP = re.compile(r"\b(?:ep|episode|e)\s?(\d{1,4})(?:v\d+)?\b", re.IGNORECASE)
-_BRACKET_EP = re.compile(r"[\[\(_\s](\d{2,3})(?:v\d+)?[\]\)_\s]")
+_BRACKET_EP = re.compile(r"[\[\(](\d{1,3})(?:v\d+)?[\]\)]")
+_LONE_NUMBER = re.compile(r"(?<![\w.])(\d{1,3})(?:v\d+)?(?![\w.])")
 _SEASON = re.compile(r"\b(?:s|season\s?)(\d{1,2})\b", re.IGNORECASE)
 _RESOLUTION = re.compile(r"\b(?:480|540|576|720|1080|1440|2160|4320)p?\b")
 
@@ -75,10 +76,16 @@ def parse_episode(filename: str) -> tuple[int | None, float | None]:
     s = _SEASON.search(plain)
     if s:
         season = int(s.group(1))
-    for pattern in (_DASH_EP, _WORD_EP, _BRACKET_EP):
+    for pattern in (_DASH_EP, _WORD_EP):
         m = pattern.search(f" {plain} ")
         if m:
             return season, float(m.group(1))
+    # A bracketed number ("[05]"), the last one, so a title's own number
+    # ("Mob Psycho 100 [05]") never wins; then the last bare number.
+    for pattern in (_BRACKET_EP, _LONE_NUMBER):
+        found = pattern.findall(plain)
+        if found:
+            return season, float(found[-1])
     return season, None
 
 
@@ -95,15 +102,21 @@ def episodes_in(folder: str, *, skip: set[str] | frozenset = frozenset()) -> lis
     skip_real = {os.path.realpath(p) for p in skip}
     for root, dirs, files in os.walk(folder):
         dirs[:] = sorted(d for d in dirs if not d.startswith("."))
-        if any(root == s or root.startswith(s.rstrip(os.sep) + os.sep) for s in skip_real):
+        real_root = os.path.realpath(root)
+        if any(real_root == s or real_root.startswith(s.rstrip(os.sep) + os.sep)
+               for s in skip_real):
             continue
         for f in files:
             low = f.lower()
             if low.endswith(INCOMPLETE_EXT) or os.path.splitext(low)[1] not in VIDEO_EXT:
                 continue
-            if "sample" in low and os.path.getsize(os.path.join(root, f)) < 100 << 20:
-                continue
             path = os.path.join(root, f)
+            try:
+                size = os.path.getsize(path)      # a dangling link raises here
+            except OSError:
+                continue
+            if "sample" in low and size < 100 << 20:
+                continue
             if os.path.realpath(path) in skip_real:
                 continue
             season, number = parse_episode(f)
@@ -125,8 +138,41 @@ def shows(save_base: str, *, skip: set[str] | frozenset = frozenset()) -> list[S
             continue
         eps = episodes_in(entry.path, skip=skip)
         if eps:
-            newest = max(os.path.getmtime(e.path) for e in eps)
+            newest = max((_mtime(e.path) for e in eps), default=0.0)
             out.append(Show(name=entry.name, path=entry.path, episodes=eps, newest=newest))
+    out.sort(key=lambda s: s.newest, reverse=True)
+    return out
+
+
+def _mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def show_names(roots: list[str]) -> list[str]:
+    """The folder names under `roots`, for completion: no walk, no stat."""
+    names: set[str] = set()
+    for root in roots:
+        try:
+            names.update(e.name for e in os.scandir(root)
+                         if not e.name.startswith(".") and e.is_dir())
+        except OSError:
+            continue
+    return sorted(names, key=str.lower)
+
+
+def shows_in(roots: list[str], *, skip: set[str] | frozenset = frozenset()) -> list[Show]:
+    """shows() across several roots (the client's, and endpoints' own)."""
+    seen: set[str] = set()
+    out: list[Show] = []
+    for root in roots:
+        real = os.path.realpath(root)
+        if real in seen:
+            continue
+        seen.add(real)
+        out.extend(shows(root, skip=skip))
     out.sort(key=lambda s: s.newest, reverse=True)
     return out
 
@@ -156,21 +202,35 @@ def _load_played(path: Path | None = None) -> dict:
         return {}
 
 
-def last_played(show: Show, path: Path | None = None) -> str | None:
+def load_played(path: Path | None = None) -> dict:
+    """Everything played.json holds; pass it to the functions below to read
+    the file once for many shows."""
+    return _load_played(path)
+
+
+def last_played(show: Show, path: Path | None = None, *,
+                played: dict | None = None) -> str | None:
     """The file (relative to the show folder) anirss last played for it."""
-    entry = _load_played(path).get(os.path.realpath(show.path))
+    played = _load_played(path) if played is None else played
+    entry = played.get(os.path.realpath(show.path))
     return entry.get("file") if isinstance(entry, dict) else None
 
 
-def next_episode(show: Show, path: Path | None = None) -> Episode | None:
+def played_upto(show: Show, path: Path | None = None, *,
+                played: dict | None = None) -> int:
+    """Index in show.episodes of the last one played, -1 for none (or one
+    that is gone)."""
+    last = last_played(show, path, played=played)
+    rels = [os.path.relpath(e.path, show.path) for e in show.episodes]
+    return rels.index(last) if last in rels else -1
+
+
+def next_episode(show: Show, path: Path | None = None, *,
+                 played: dict | None = None) -> Episode | None:
     """The episode after the last one played, or the first. None when the
     last one played is the newest there is (caught up)."""
-    last = last_played(show, path)
-    rels = [os.path.relpath(e.path, show.path) for e in show.episodes]
-    if last is None or last not in rels:
-        return show.episodes[0] if show.episodes else None
-    i = rels.index(last)
-    return show.episodes[i + 1] if i + 1 < len(show.episodes) else None
+    i = played_upto(show, path, played=played) + 1
+    return show.episodes[i] if i < len(show.episodes) else None
 
 
 def mark_played(show: Show, ep: Episode, path: Path | None = None) -> None:
@@ -281,11 +341,12 @@ def activity(torrents: list[dict], roots: list[str], *, days: float = 7.0,
     return Activity(downloading=down, finished=done)
 
 
-def show_of(t: dict, save_base: str) -> str:
-    """The show folder a torrent saves into, or "" when it is not under
-    `save_base` (a movie)."""
+def show_of(t: dict, show_roots: str | list[str]) -> str:
+    """The show folder a torrent saves into, under one of `show_roots`, or
+    "" when it is under none of them."""
     sp = os.path.normpath(t.get("save_path") or "")
-    base = os.path.normpath(save_base).rstrip(os.sep)
-    if not sp.startswith(base + os.sep):
-        return ""
-    return sp[len(base) + 1:].split(os.sep, 1)[0]
+    for root in [show_roots] if isinstance(show_roots, str) else show_roots:
+        base = os.path.normpath(root).rstrip(os.sep)
+        if root and sp.startswith(base + os.sep):
+            return sp[len(base) + 1:].split(os.sep, 1)[0]
+    return ""
