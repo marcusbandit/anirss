@@ -191,9 +191,12 @@ class SubscribeResult:
     must_contain: str
     must_not_contain: str
     tags: list[str]
-    # qBittorrent preferences this subscription had to turn on (RSS_PREFS
-    # keys); empty when they were on already.
+    # qBittorrent preferences this subscription turned on (RSS_PREFS keys);
+    # empty when they were on already.
     turned_on: list[str] = field(default_factory=list)
+    # RSS_PREFS keys still off afterwards (subscribed with enable_rss=False):
+    # the rule exists but downloads nothing until they are on.
+    rss_off: list[str] = field(default_factory=list)
 
 
 # qBittorrent ships with both off, and a subscription does nothing without
@@ -204,22 +207,23 @@ RSS_PREFS = {
 }
 
 
-def rss_prefs_off(qbt: QbtSession) -> list[str]:
-    """The RSS_PREFS keys qBittorrent reports as off. Empty when they are on
-    or it does not say (an old build, an odd proxy)."""
+def rss_prefs_off(qbt: QbtSession) -> list[str] | None:
+    """The RSS_PREFS keys qBittorrent reports as off: empty when they are
+    on, None when it could not be read (an old build, an odd proxy)."""
     try:
         prefs = qbt.get_json("/api/v2/app/preferences")
     except QbtError as e:
         log("WARN", f"can't read qBittorrent preferences: {e}")
-        return []
-    if not isinstance(prefs, dict):
-        return []
+        return None
+    if not isinstance(prefs, dict) or not any(k in prefs for k in RSS_PREFS):
+        return None
     return [k for k in RSS_PREFS if prefs.get(k) is False]
 
 
 def ensure_rss_on(qbt: QbtSession) -> list[str]:
-    """Turns on whichever of RSS_PREFS is off. Returns the keys it turned on."""
-    off = rss_prefs_off(qbt)
+    """Turns on whichever of RSS_PREFS is off. Returns the keys it turned on.
+    These are qBittorrent-wide: RSS rules of the user's own act on them too."""
+    off = rss_prefs_off(qbt) or []
     if off:
         qbt.post("/api/v2/app/setPreferences", json=json.dumps({k: True for k in off}))
         log("INFO", f"turned on qBittorrent preferences: {off}")
@@ -258,11 +262,15 @@ def magnet_hash(link: str) -> str | None:
 def subscribe_rule(qbt: QbtSession, feed_url: str, name: str, save_base: str,
                    endpoint_name: str = "", must_not_contain: str = "",
                    must_contain: str = "",
-                   tags: list[str] | None = None) -> SubscribeResult:
+                   tags: list[str] | None = None, *,
+                   enable_rss: bool = True) -> SubscribeResult:
     """Register `feed_url` as a qB RSS feed plus an auto-download rule that
-    saves under save_base/<name>. Turns on qBittorrent's RSS fetching and
-    auto-download first when they are off. Silent; raises QbtError."""
-    turned_on = ensure_rss_on(qbt)
+    saves under save_base/<name>. With `enable_rss`, turns on qBittorrent's
+    RSS fetching and auto-download first when they are off (a subscription
+    does nothing without them); without it, reports them in `rss_off`.
+    Silent; raises QbtError."""
+    turned_on = ensure_rss_on(qbt) if enable_rss else []
+    rss_off = [] if enable_rss else (rss_prefs_off(qbt) or [])
     name = _unique_rule_name(qbt, name, feed_url, endpoint_name)
     save_path = os.path.join(save_base, name)
     qbt.post("/api/v2/rss/addFeed", url=feed_url, path=name)
@@ -295,7 +303,7 @@ def subscribe_rule(qbt: QbtSession, feed_url: str, name: str, save_base: str,
         }
     qbt.post("/api/v2/rss/setRule", ruleName=name, ruleDef=json.dumps(rule))
     return SubscribeResult(name, feed_url, save_path, must_contain,
-                           must_not_contain, rule_tags, turned_on)
+                           must_not_contain, rule_tags, turned_on, rss_off)
 
 
 def add_links(qbt: QbtSession, links: list[str], save_path: str,
@@ -382,19 +390,41 @@ def read_torrent_file(path: str) -> bytes:
 
 # -------- CLI wrappers: the cores above plus the `==>` progress lines --------
 
+def ask_rss_on(qbt: QbtSession) -> bool:
+    """Interactive: when qBittorrent's RSS fetching or auto-download is off,
+    say what that means and ask before turning it on. True to turn on."""
+    off = rss_prefs_off(qbt)
+    if not off:
+        return True
+    what = " and ".join(RSS_PREFS[k] for k in off)
+    print(f"{C_YEL}qBittorrent has {what} off{C_OFF}, so a subscription never "
+          f"downloads anything.")
+    print(f"{C_DIM}Turning {'it' if len(off) == 1 else 'them'} on is for all of "
+          f"qBittorrent: RSS rules of your own act on it too.{C_OFF}")
+    try:
+        reply = input("Turn on? [Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        raise AnirssError("cancelled") from None
+    return reply not in ("n", "no")
+
+
 def do_subscribe(qbt: QbtSession, feed_url: str, name: str, save_base: str,
                  endpoint_name: str = "", must_not_contain: str = "",
                  must_contain: str = "",
-                 tags: list[str] | None = None) -> str:
+                 tags: list[str] | None = None, *, enable_rss: bool = True) -> str:
     res = subscribe_rule(qbt, feed_url, name, save_base,
                          endpoint_name=endpoint_name,
                          must_not_contain=must_not_contain,
-                         must_contain=must_contain, tags=tags)
+                         must_contain=must_contain, tags=tags,
+                         enable_rss=enable_rss)
     if res.turned_on:
         what = " and ".join(RSS_PREFS[k] for k in res.turned_on)
         print(f"{C_YEL}==>{C_OFF} turned on {what} in qBittorrent: "
               f"{'it was' if len(res.turned_on) == 1 else 'they were'} off, so no "
               f"subscription would ever download anything")
+    if res.rss_off:
+        print(f"{C_YEL}==>{C_OFF} RSS is off in qBittorrent, so nothing downloads yet. "
+              f"Turn it on in Tools > Options > RSS when you want this to run.")
     print(f"{C_CYN}==>{C_OFF} added feed {C_BLD}{res.name}{C_OFF}")
     print(f"{C_CYN}==>{C_OFF} added rule  {C_BLD}{res.name}{C_OFF} -> {res.save_path}"
           f"{_tags_note(tags)}")

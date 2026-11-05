@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 
 from anirss_lib.ansi import C_BLD, C_CYN, C_DIM, C_GRN, C_OFF, C_RED, C_YEL
-from anirss_lib.errors import FetchError, ValidationError
+from anirss_lib.errors import AnirssError, FetchError, ValidationError
 from anirss_lib.logging import die
 
 # Where people find repos: the same pointer AniBeam's onboarding gives.
@@ -95,6 +95,10 @@ def confirm(question: str, noconfirm: bool = False) -> bool:
     return reply in ("y", "yes")
 
 
+class Cancelled(AnirssError):
+    """Ctrl-C or end of input at a prompt."""
+
+
 def ask(label: str, *, secret: bool = False) -> str:
     try:
         if secret and sys.stdin.isatty():
@@ -102,7 +106,7 @@ def ask(label: str, *, secret: bool = False) -> str:
         return input(f"{label}: ").strip()
     except (EOFError, KeyboardInterrupt):
         print()
-        die("cancelled")
+        raise Cancelled("cancelled") from None
 
 
 def choose(options: list[str], header: str) -> int | None:

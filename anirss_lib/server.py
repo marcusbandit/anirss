@@ -491,15 +491,17 @@ class Handler(BaseHTTPRequestHandler):
         hidden = _bool(b.get("hidden"))
         client = _str(b, "client")
         feed_url = _str(b, "feed_url")
+        enable_rss = _bool(b.get("enable_rss"), True)
         if feed_url:
             res = self.ani.subscribe_feed(feed_url, name=_str(b, "name"),
-                                          hidden=hidden, client=client)
+                                          hidden=hidden, client=client,
+                                          enable_rss=enable_rss)
         else:
             res = self.ani.subscribe(_str(b, "query", required=True) or "",
                                      endpoint=_str(b, "endpoint"),
                                      items=_items(b, required=False),
                                      name=_str(b, "name"), hidden=hidden,
-                                     client=client)
+                                     client=client, enable_rss=enable_rss)
         return 201, to_jsonable(res)
 
     def h_subscribe_preview(self, q, _):

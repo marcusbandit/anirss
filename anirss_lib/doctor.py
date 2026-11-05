@@ -81,7 +81,12 @@ def check_qbt(ani, client: dict) -> list[Check]:
         out.append(Check(f"qbt_version:{name}", f"version{tag}", WARN,
                          f"qBittorrent {version}: subscriptions work, but their "
                          f"episodes are not tagged", "update qBittorrent to 4.6 or newer"))
-    if off:
+    if off is None:
+        out.append(Check(f"qbt_rss:{name}", f"RSS{tag}", WARN,
+                         "couldn't read qBittorrent's RSS settings",
+                         "look in Tools > Options > RSS: tick \"Enable fetching RSS "
+                         "feeds\" and \"Enable auto downloading of RSS torrents\""))
+    elif off:
         what = " and ".join(RSS_PREFS[k] for k in off)
         out.append(Check(f"qbt_rss:{name}", f"RSS{tag}", WARN,
                          f"{what} {'is' if len(off) == 1 else 'are'} off, so a "

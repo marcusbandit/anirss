@@ -19,6 +19,7 @@ from anirss_lib.ansi import C_BLD, C_CYN, C_DIM, C_GRN, C_OFF, C_RED, C_YEL
 from anirss_lib.cli import repos as repo_cli
 from anirss_lib.config import CONFIG_PATH
 from anirss_lib.errors import AnirssError, QbtError
+from anirss_lib.format import short_home
 
 ONBOARDED = CONFIG_PATH.parent / "onboarded"
 STEPS = 3
@@ -36,16 +37,10 @@ PORTS = (8080, 8081, 8090, 9090)
 
 # ---- the marker --------------------------------------------------------------
 
-def needs_onboarding(cfg) -> bool:
-    """True on a first run: setup never ran and nothing is configured to
-    search. An existing setup gets the marker quietly, so an upgrade never
-    walks a working user through setup."""
-    if ONBOARDED.exists():
-        return False
-    if cfg.get("endpoint"):
-        mark_onboarded()
-        return False
-    return True
+def needs_onboarding() -> bool:
+    """Whether setup never ran. The caller asks only when nothing is set up
+    to search, so a working setup is never walked through it."""
+    return not ONBOARDED.exists()
 
 
 def mark_onboarded() -> None:
@@ -123,11 +118,6 @@ class _Cancel(Exception):
     """Ctrl-C or end of input: leave setup, keep what was saved so far."""
 
 
-def _home(path: str) -> str:
-    home = os.path.expanduser("~")
-    return "~" + path[len(home):] if path == home or path.startswith(home + os.sep) else path
-
-
 # ---- the steps ---------------------------------------------------------------
 
 def welcome() -> bool:
@@ -143,6 +133,17 @@ def welcome() -> bool:
         f"{cmd('anirss --setup')}.")
     say()
     return ask("Press Enter to start, or type s to skip setup").lower() not in ("s", "skip")
+
+
+def _several_clients() -> bool:
+    import tomllib
+    if os.environ.get("ANIRSS_QBT_URL", "").strip():
+        return True
+    try:
+        raw = tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    return bool((raw.get("qbittorrent") or {}).get("client"))
 
 
 def _candidates(cfg) -> list[str]:
@@ -211,15 +212,21 @@ def step_qbt(cfg, notes: list[str]) -> None:
         "touches the rest of your torrents. qBittorrent can be on this machine or "
         "another one, a seedbox say.")
     say()
-    multi = bool(cfg["qbittorrent"].get("client"))
+    # cfg["qbittorrent"] is one client already (pin_client); whether the file
+    # names several, or the environment names one, decides whether setup may
+    # write the shared [qbittorrent] url.
+    multi = _several_clients()
     if multi:
-        warn("config.toml names several qBittorrents; setup checks the first and "
-             "leaves the blocks as they are.")
+        warn("config.toml names several qBittorrents (or ANIRSS_QBT_URL names one); "
+             "setup checks this one and leaves config.toml's addresses as they are.")
     url = _find_qbt(cfg)
+    offered = False
     while url is None:
         configured = cfg["qbittorrent"]["url"]
         start = _qbt_start_command(cfg["qbittorrent"])
-        nox = start and "nox" in os.path.basename(start[0]) and _is_local_url(configured)
+        nox = (not offered and start and "nox" in os.path.basename(start[0])
+               and _is_local_url(configured))
+        offered = offered or bool(nox)
         if nox and yes("qbittorrent-nox is installed but not running. Start it now?"):
             _launch_qbt(start)
             print(f"  {C_DIM}waiting for its Web UI…{C_OFF}")
@@ -269,12 +276,17 @@ def step_qbt(cfg, notes: list[str]) -> None:
         ok(f"Logged in as {C_BLD}{username}{C_OFF}"
            f"{f', qBittorrent {version}' if version else ''}")
         off = rss_prefs_off(qbt)
-        if off:
+        if off is None:
+            warn("Couldn't read qBittorrent's RSS settings; anirss --doctor checks "
+                 "them later.")
+        elif off:
             print()
             what = " and ".join(RSS_PREFS[k] for k in off)
             say(f"qBittorrent ships with {what} off, and a subscription needs "
                 f"{'it' if len(off) == 1 else 'both'}: without "
                 f"{'it' if len(off) == 1 else 'them'} no new episode ever downloads.")
+            say("This is a qBittorrent-wide setting: RSS rules of your own act on "
+                "it too.", dim=True)
             if yes("Turn them on now?"):
                 ensure_rss_on(qbt)
                 ok("RSS fetching and auto-download are on.")
@@ -305,12 +317,12 @@ def step_downloads(cfg, notes: list[str]) -> None:
     print()
     shows = cfg["downloads"]["save_base"]
     movies = cfg["downloads"]["movie_path"]
-    print(f"    {C_CYN}Shows{C_OFF}   {_home(shows)}/{C_DIM}<show name>/{C_OFF}")
-    print(f"    {C_CYN}Movies{C_OFF}  {_home(movies)}/")
+    print(f"    {C_CYN}Shows{C_OFF}   {short_home(shows)}/{C_DIM}<show name>/{C_OFF}")
+    print(f"    {C_CYN}Movies{C_OFF}  {short_home(movies)}/")
     print()
     say("Enter keeps a folder, or type another.", dim=True)
-    new_shows = ask("Shows folder", _home(shows))
-    new_movies = ask("Movies folder", _home(movies))
+    new_shows = ask("Shows folder", short_home(shows))
+    new_movies = ask("Movies folder", short_home(movies))
     changed = {}
     if os.path.expanduser(new_shows) != shows:
         changed["save_base"] = new_shows
@@ -358,6 +370,8 @@ def step_endpoints(notes: list[str]) -> None:
             elif _trust(ani, reply):
                 _install_loop(ani)
                 return
+        except repo_cli.Cancelled:
+            raise _Cancel() from None
         except AnirssError as e:
             warn(str(e))
         print()
@@ -415,6 +429,8 @@ def _install_loop(ani) -> None:
         try:
             ep = ani.install_endpoint(d.id, values, repo=offers[i].repo)
             ok(f"Installed {C_BLD}{ep.name}{C_OFF}")
+        except repo_cli.Cancelled:
+            raise
         except AnirssError as e:
             warn(str(e))
         print()
@@ -422,7 +438,8 @@ def _install_loop(ani) -> None:
             return
 
 
-def done(cfg, notes: list[str]) -> None:
+def done(cfg, notes: list[str]) -> bool:
+    """The last screen. True when there is something to search."""
     from anirss_lib.api import Anirss
     screen(None, "done")
     try:
@@ -433,7 +450,7 @@ def done(cfg, notes: list[str]) -> None:
     print(f"  {C_GRN}{C_BLD}{'✓ anirss is ready' if ready else '✓ setup saved'}{C_OFF}")
     print()
     print(f"    {C_CYN}qBittorrent{C_OFF}  {cfg['qbittorrent']['url']}")
-    print(f"    {C_CYN}Shows{C_OFF}        {_home(cfg['downloads']['save_base'])}")
+    print(f"    {C_CYN}Shows{C_OFF}        {short_home(cfg['downloads']['save_base'])}")
     print(f"    {C_CYN}Endpoints{C_OFF}    {', '.join(names) if names else C_DIM + 'none yet' + C_OFF}")
     if notes:
         print()
@@ -446,11 +463,13 @@ def done(cfg, notes: list[str]) -> None:
     print(f"  Check everything:   {C_BLD}anirss --doctor{C_OFF}")
     print(f"  Run this again:     {C_BLD}anirss --setup{C_OFF}")
     print()
+    return bool(names)
 
 
 def run(cfg, *, first_run: bool = False) -> bool:
-    """The whole walk. True when it finished (the caller may go on to the
-    search the user typed); False when skipped or cancelled."""
+    """The whole walk. True when it finished with something to search (the
+    caller goes on to the search); False when skipped, cancelled, or there
+    is still nothing to search."""
     notes: list[str] = []
     try:
         if not welcome():
@@ -461,12 +480,13 @@ def run(cfg, *, first_run: bool = False) -> bool:
         step_qbt(cfg, notes)
         step_downloads(cfg, notes)
         step_endpoints(notes)
-    except _Cancel:
+    except (_Cancel, repo_cli.Cancelled):
         print(f"  {C_DIM}Setup stopped; what you saved stays. "
               f"{C_BLD}anirss --setup{C_OFF}{C_DIM} picks it up again.{C_OFF}")
         return False
     mark_onboarded()
-    done(cfg, notes)
+    if not done(cfg, notes):
+        return False
     if first_run and sys.stdin.isatty():
         try:
             input(f"  {C_DIM}Press Enter to start searching…{C_OFF}")

@@ -240,9 +240,12 @@ Subscribing and downloading (these need qBittorrent):
 | `subscribe(query, *, endpoint=None, items=None, name=None, hidden=False, client=None)` | `SubscribeResult` | `items` are fetched (no fallback) if omitted; `NotFoundError` if there are none. `name` defaults to the show name parsed from the first item. |
 | `subscribe_feed(url, *, name=None, hidden=False, client=None)` | `SubscribeResult` | Subscribe to a raw RSS URL as is. |
 
-Both subscribe calls turn on qBittorrent's RSS fetching and RSS auto-download
-first when they are off (a stock qBittorrent ships with both off, and a
-subscription does nothing without them); `turned_on` says which.
+Both subscribe calls take `enable_rss=True`: they turn on qBittorrent's RSS
+fetching and RSS auto-download first when they are off (a stock qBittorrent
+ships with both off, and a subscription does nothing without them), and
+`turned_on` says which. These are qBittorrent-wide, so RSS rules of the user's
+own act on them too; ask before subscribing when that matters, and pass
+`enable_rss=False` to leave them, which reports them in `rss_off` instead.
 | `download(links, *, name, hidden=False, client=None)` | `AddResult` | `magnet:` or http(s) links only. Saves under `<save_base>/<name>`. |
 | `download_items(items, *, name=None, hidden=False, client=None)` | `AddResult` | `download()` for search results. |
 | `movie(link, *, client=None)` | `AddResult` | One link into `[downloads].movie_path`, no subdirectory. |
@@ -897,6 +900,9 @@ feed is fetched to check it has items and to derive a default name.
 
 `name` defaults to the show name parsed from the first item. `hidden: true`
 saves under `[downloads].hidden_base` instead of `save_base`.
+`enable_rss` (default `true`) turns qBittorrent's RSS fetching and
+auto-download on when they are off and lists them in `turned_on`; `false`
+leaves them and lists them in `rss_off`. They are qBittorrent-wide settings.
 
 ```
 curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -1137,7 +1143,7 @@ keep their order (`groups[].members` are indexes).
 | `Endpoint` (Python) | `name`, `kind` (`"nyaa"` or `"rss"`), `url`, `category`, `filter` (unredacted `url`) |
 | endpoint info (HTTP `/endpoints`, Python `endpoint_info`) | `name`, `kind`, `url` (redacted), `client_side_refine` |
 | `SubscriptionSpec` | `feed_url`, `must_contain`, `must_not_contain`, `endpoint_name` |
-| `SubscribeResult` | `name`, `feed_url`, `save_path`, `must_contain`, `must_not_contain`, `tags`, `turned_on` (qBittorrent preferences the subscription had to turn on: `rss_processing_enabled`, `rss_auto_downloading_enabled`; empty when they were on) |
+| `SubscribeResult` | `name`, `feed_url`, `save_path`, `must_contain`, `must_not_contain`, `tags`, `turned_on` (qBittorrent preferences the subscription turned on: `rss_processing_enabled`, `rss_auto_downloading_enabled`; empty when they were on), `rss_off` (the ones still off, with `enable_rss` false) |
 | `doctor.Check` | `id` (stable: `qbt:<client>`, `qbt_login:<client>`, `qbt_rss:<client>`, `endpoints`, `endpoint:<name>`, `repo:<url>`, `downloads:<key>`, ...), `title`, `status` (`ok`, `warn`, `fail`, `skip`), `detail`, `fix` |
 | `AddResult` | `count`, `save_path`, `tags`, `hashes` |
 | `RuleInfo` | `name`, `feed_url`, `save_path`, `rule_enabled`, `torrent_count`, `file_count` |

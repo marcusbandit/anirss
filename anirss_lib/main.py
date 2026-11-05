@@ -35,7 +35,7 @@ from anirss_lib.fzf import fzf_search_prompt
 from anirss_lib.logging import die, init_log, log
 from anirss_lib.nyaa import FetchError, fetch_rss
 from anirss_lib.qbt.actions import (
-    do_download, do_movie, do_subscribe, do_upload_local_torrent,
+    ask_rss_on, do_download, do_movie, do_subscribe, do_upload_local_torrent,
 )
 from anirss_lib.qbt.clients import download_root, local_files, qbt_client, qbt_clients
 from anirss_lib.qbt.feeds import maybe_refresh_feed_cache
@@ -672,7 +672,7 @@ def _run_interactive(initial_query: str, force_url: str | None,
                             endpoint_name=sub_endpoint_name,
                             must_not_contain=must_not_contain,
                             must_contain=must_contain,
-                            tags=tags)
+                            tags=tags, enable_rss=ask_rss_on(qbt))
         summary = (f"{C_GRN}✓{C_OFF} Subscribed: {C_BLD}{name}{C_OFF}{hidden_tag}"
                    f"  {C_DIM}(feed: {feed_url}){C_OFF}")
         if must_not_contain:
@@ -797,7 +797,9 @@ def _main() -> None:
             and classify_url(" ".join(parsed.positional).strip()) == UrlKind.NOT_URL
             and sys.stdin.isatty() and sys.stdout.isatty()):
         from anirss_lib.cli import setup
-        if setup.needs_onboarding(cfg) and setup.run(cfg, first_run=True):
+        if setup.needs_onboarding():
+            if not setup.run(cfg, first_run=True):
+                return
             cfg = load_config()
             responsive.set_display(cfg["display"])
             pin_client(cfg, argv, client)

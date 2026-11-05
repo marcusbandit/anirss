@@ -743,11 +743,15 @@ class Anirss:
 
     def subscribe(self, query: str, *, endpoint: str | None = None,
                   items: list[Item] | None = None, name: str | None = None,
-                  hidden: bool = False, client: str | None = None) -> SubscribeResult:
+                  hidden: bool = False, client: str | None = None,
+                  enable_rss: bool = True) -> SubscribeResult:
         """Subscribe to a search: a qB RSS feed + auto-download rule saving
         under save_base/<name> (hidden_base with hidden=True). `items` are
         the (refined) results the search returned; fetched when omitted.
-        `name` defaults to the show name parsed from the first result."""
+        `name` defaults to the show name parsed from the first result.
+        `enable_rss` turns qBittorrent's RSS fetching and auto-download on
+        when they are off (qBittorrent-wide); False leaves them and reports
+        them in `rss_off`."""
         query = (query or "").strip()
         if not query:
             raise ValidationError("empty query")
@@ -761,17 +765,20 @@ class Anirss:
             q, spec.feed_url, name, self._save_base(hidden, client),
             endpoint_name=spec.endpoint_name,
             must_not_contain=spec.must_not_contain,
-            must_contain=spec.must_contain, tags=self._tags(client)), client)
+            must_contain=spec.must_contain, tags=self._tags(client),
+            enable_rss=enable_rss), client)
 
     def subscribe_feed(self, url: str, *, name: str | None = None,
-                       hidden: bool = False, client: str | None = None) -> SubscribeResult:
+                       hidden: bool = False, client: str | None = None,
+                       enable_rss: bool = True) -> SubscribeResult:
         """Subscribe to a raw RSS feed URL as-is (`anirss -S <url>`)."""
         items = self.fetch_feed(url)
         if not items:
             raise NotFoundError(f"no items returned by {url}")
         name = self._name_for(name, items, "anirss")
         return self._with_qbt(lambda q: actions.subscribe_rule(
-            q, url, name, self._save_base(hidden, client), tags=self._tags(client)), client)
+            q, url, name, self._save_base(hidden, client), tags=self._tags(client),
+            enable_rss=enable_rss), client)
 
     def download(self, links: list[str], *, name: str, hidden: bool = False,
                  client: str | None = None, save_path: str | None = None) -> AddResult:

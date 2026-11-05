@@ -48,12 +48,34 @@ def test_set_values_quotes_what_it_writes(tmp_path):
 
 # ---- the onboarding marker ---------------------------------------------------
 
-def test_first_run_needs_onboarding_and_a_working_setup_never_does(tmp_path, monkeypatch):
+def test_onboarding_shows_once(tmp_path, monkeypatch):
     monkeypatch.setattr(setup, "ONBOARDED", tmp_path / "onboarded")
-    assert setup.needs_onboarding({"endpoint": []})
-    assert not setup.needs_onboarding({"endpoint": [{"name": "x"}]})
-    assert (tmp_path / "onboarded").exists()       # an upgrade marks it quietly
-    assert not setup.needs_onboarding({"endpoint": []})
+    assert setup.needs_onboarding()
+    setup.mark_onboarded()
+    assert not setup.needs_onboarding()
+
+
+def test_setup_never_writes_the_shared_url_for_several_clients(tmp_path, monkeypatch):
+    path = tmp_path / "config.toml"
+    monkeypatch.setattr(setup, "CONFIG_PATH", path)
+    monkeypatch.delenv("ANIRSS_QBT_URL", raising=False)
+    path.write_text('[qbittorrent]\nurl = "http://localhost:8080"\n')
+    assert not setup._several_clients()
+    path.write_text('[qbittorrent]\n[[qbittorrent.client]]\nname = "a"\nurl = "http://a:1"\n')
+    assert setup._several_clients()
+    path.write_text('[qbittorrent]\nurl = "http://localhost:8080"\n')
+    monkeypatch.setenv("ANIRSS_QBT_URL", "http://127.0.0.1:47321")
+    assert setup._several_clients()
+
+
+def test_ctrl_c_at_a_repo_prompt_raises_instead_of_exiting(monkeypatch):
+    from anirss_lib.cli import repos as repo_cli
+
+    def interrupt(prompt=""):
+        raise KeyboardInterrupt
+    monkeypatch.setattr("builtins.input", interrupt)
+    with pytest.raises(repo_cli.Cancelled):
+        repo_cli.ask("API key")
 
 
 # ---- qBittorrent or something else ---------------------------------------------
@@ -73,17 +95,24 @@ class _Resp:
 
 
 @pytest.mark.parametrize("answer,expected", [
-    (b"v5.3.0", "qbt"), (b"v4.6.7", "qbt"), (403, "qbt"), (401, "qbt"),
-    (404, "other"), (b"<html>hello</html>", "other"), (OSError("refused"), None),
+    (b"v5.3.0", "qbt"), (b"v4.6.7", "qbt"), ((403, b"Forbidden"), "qbt"),
+    ((403, b"<html>no</html>"), "other"), ((401, b"Unauthorized"), "other"),
+    ((404, b""), "other"), (b"<html>hello</html>", "other"),
+    (OSError("refused"), None), ("badstatus", None),
 ])
 def test_qbt_answer_tells_qbittorrent_from_another_server(monkeypatch, answer, expected):
+    import http.client
+    import io
     import urllib.error
 
     from anirss_lib.qbt import session
 
     def fake(req, timeout):
-        if isinstance(answer, int):
-            raise urllib.error.HTTPError(req.full_url, answer, "x", {}, None)
+        if isinstance(answer, tuple):
+            code, body = answer
+            raise urllib.error.HTTPError(req.full_url, code, "x", {}, io.BytesIO(body))
+        if answer == "badstatus":
+            raise http.client.BadStatusLine("SSH-2.0-OpenSSH")
         if isinstance(answer, Exception):
             raise urllib.error.URLError(answer)
         return _Resp(answer)
@@ -152,6 +181,12 @@ def test_doctor_names_each_problem_with_a_fix(tmp_path, monkeypatch):
     ani = FakeAni(tmp_path, auth_error=QbtAuthError("refused", rejected=True))
     checks = _by_id(doctor.run(ani, fzf=False))
     assert checks["qbt_login"].status == "fail" and "refused" in checks["qbt_login"].fix
+
+
+def test_doctor_says_when_it_could_not_read_the_rss_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr("anirss_lib.qbt.session.qbt_answer", lambda url, **kw: "qbt")
+    checks = _by_id(doctor.run(FakeAni(tmp_path, prefs={"locale": "en"}), fzf=False))
+    assert checks["qbt_rss"].status == "warn" and "couldn't read" in checks["qbt_rss"].detail
 
 
 def test_doctor_says_when_the_address_is_not_qbittorrent(tmp_path, monkeypatch):
