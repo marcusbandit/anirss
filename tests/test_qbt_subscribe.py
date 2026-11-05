@@ -1,5 +1,4 @@
 import json
-import os
 
 from anirss_lib.errors import QbtError
 from anirss_lib.qbt import actions
@@ -100,7 +99,7 @@ def test_do_subscribe_puts_tags_in_torrent_params():
     assert params["tags"] == ["Anime", "anirss"]
     # torrentParams supersedes the flat savePath, so it has to carry the path
     # and pin manual torrent management or qB would apply its global TMM.
-    assert params["save_path"] == os.path.join("/tmp/save", "Show")
+    assert params["save_path"] == "/tmp/save/Show"
     assert params["use_auto_tmm"] is False
 
 
@@ -109,7 +108,7 @@ def test_do_subscribe_without_tags_keeps_legacy_rule_shape():
     actions.do_subscribe(qbt, "http://feed", "Show", "/tmp/save")
     rule = _rule_from(qbt)
     assert "torrentParams" not in rule
-    assert rule["savePath"] == os.path.join("/tmp/save", "Show")
+    assert rule["savePath"] == "/tmp/save/Show"
 
 
 class PrefsQbt(RecordingQbt):
@@ -157,3 +156,9 @@ def test_unreadable_rss_settings_are_unknown_not_on():
     assert actions.rss_prefs_off(PrefsQbt({"locale": "en"})) is None
     assert actions.rss_prefs_off(PrefsQbt({"rss_processing_enabled": True,
                                            "rss_auto_downloading_enabled": True})) == []
+
+
+def test_save_paths_join_the_way_the_qbittorrent_machine_writes_them():
+    assert actions.join_save_path("/srv/anime", "Frieren") == "/srv/anime/Frieren"
+    assert actions.join_save_path("D:\\Anime", "Frieren") == "D:\\Anime\\Frieren"
+    assert actions.join_save_path("C:\\Users\\me/Downloads/Anime", "X").endswith("\\X")

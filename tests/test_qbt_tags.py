@@ -1,4 +1,3 @@
-import os
 
 from anirss_lib import config
 from anirss_lib.qbt import actions
@@ -45,7 +44,7 @@ def test_do_download_sends_tags():
     endpoint, fields = qbt.posts[0]
     assert endpoint == "/api/v2/torrents/add"
     assert fields["tags"] == "Anime"
-    assert fields["savepath"] == os.path.join("/tmp/save", "Show")
+    assert fields["savepath"] == "/tmp/save/Show"
 
 
 def test_do_download_without_tags_omits_the_field():

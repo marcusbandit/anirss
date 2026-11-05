@@ -225,7 +225,7 @@ def test_config_dict_builds_without_disk_access(tmp_path, monkeypatch):
 def test_empty_config_dict_is_defaults_not_disk(monkeypatch):
     monkeypatch.setattr(api_mod, "load_config",
                         lambda *a, **k: pytest.fail("must not read disk"))
-    assert Anirss(config={"endpoint": [NYAA_EP]}).config["downloads"]["movie_path"].startswith(os.sep)
+    assert os.path.isabs(Anirss(config={"endpoint": [NYAA_EP]}).config["downloads"]["movie_path"])
 
 
 def test_build_config_does_not_mutate_defaults():
@@ -239,11 +239,12 @@ def test_build_config_does_not_mutate_defaults():
 
 def test_build_config_expands_user_paths(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))      # Windows' home
     cfg = build_config({"downloads": {"save_base": "~/a", "movie_path": "~/m",
                                       "hidden_base": "~/h"}})
-    assert cfg["downloads"]["save_base"] == str(tmp_path / "a")
-    assert cfg["downloads"]["movie_path"] == str(tmp_path / "m")
-    assert cfg["downloads"]["hidden_base"] == str(tmp_path / "h")
+    assert cfg["downloads"]["save_base"] == f"{tmp_path}/a"
+    assert cfg["downloads"]["movie_path"] == f"{tmp_path}/m"
+    assert cfg["downloads"]["hidden_base"] == f"{tmp_path}/h"
 
 
 def test_endpoint_list_in_config_replaces_default_list():
@@ -1886,7 +1887,7 @@ def test_no_endpoints_is_its_own_error(monkeypatch):
 
 def test_add_and_remove_endpoint_write_the_file_and_reload(tmp_path):
     path = tmp_path / "config.toml"
-    path.write_text(config_mod.DEFAULT_CONFIG_TOML)
+    path.write_text(config_mod.DEFAULT_CONFIG_TOML, encoding="utf-8")
     ani = Anirss(config_path=path)
     ep, replaced = ani.add_endpoint(dict(RSS1_EP))
     assert (ep.name, replaced) == ("rss1", False)

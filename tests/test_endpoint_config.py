@@ -89,7 +89,7 @@ def test_a_write_keeps_the_previous_file_as_bak(cfg):
 
 def test_add_to_a_fresh_default_config(tmp_path):
     p = tmp_path / "config.toml"
-    p.write_text(config.DEFAULT_CONFIG_TOML)
+    p.write_text(config.DEFAULT_CONFIG_TOML, encoding="utf-8")
     add_endpoint(p, check_spec(NYAA))
     add_endpoint(p, check_spec(RSS))
     assert config.load_config(p, bootstrap=False, strict=True)["endpoint"] == [

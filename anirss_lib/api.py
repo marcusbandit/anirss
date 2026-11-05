@@ -788,7 +788,7 @@ class Anirss:
         if save_path is not None:
             save_path = _check_save_path(save_path)
         else:
-            save_path = os.path.join(self._save_base(hidden, client), validate_name(name))
+            save_path = actions.join_save_path(self._save_base(hidden, client), validate_name(name))
         return self._add_links(links, save_path, client)
 
     def download_items(self, items: list[Item], *, name: str | None = None,
@@ -828,7 +828,7 @@ class Anirss:
         if any(c in '"\\' or ord(c) < 32 or ord(c) == 127 for c in file_name):
             raise ValidationError(f"invalid file_name {file_name!r}")
         name = validate_name(name or os.path.splitext(file_name)[0] or "anirss")
-        save_path = os.path.join(self._save_base(hidden, client), name)
+        save_path = actions.join_save_path(self._save_base(hidden, client), name)
         return self._with_qbt(lambda q: actions.add_torrent_bytes(
             q, data, file_name, save_path, self._tags(client)), client)
 
@@ -872,7 +872,7 @@ class Anirss:
                  hidden: bool = False, client: str | None = None) -> list[dict]:
         """qBittorrent's torrents (state, progress, content_path, …), all of
         them or those of one subscription/download `name`, or by info-hash."""
-        save_path = (os.path.join(self._save_base(hidden, client), validate_name(name))
+        save_path = (actions.join_save_path(self._save_base(hidden, client), validate_name(name))
                      if name else None)
         return self._with_qbt(lambda q: actions.list_torrents(
             q, save_path=save_path, hashes=hashes), client)
