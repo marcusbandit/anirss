@@ -1,5 +1,6 @@
 import http.server
 import os
+import sys
 import threading
 
 import pytest
@@ -118,11 +119,17 @@ def lease_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _py(code: str) -> str:
+    """A shell command running `code` with this Python, on sh and cmd.exe alike."""
+    return f'"{sys.executable}" -c "{code}"'
+
+
 def _service(tmp_path):
     flag = tmp_path / "running"
     ep = Endpoint("svc", "rss", "http://x/{query}",
-                  start=f"touch {flag}", stop=f"rm -f {flag}", ready="http://r/",
-                  timeout=5)
+                  start=_py(f"import pathlib; pathlib.Path(r'{flag}').touch()"),
+                  stop=_py(f"import pathlib; pathlib.Path(r'{flag}').unlink(missing_ok=True)"),
+                  ready="http://r/", timeout=5)
     return ep, flag
 
 
@@ -170,8 +177,9 @@ def test_service_started_by_someone_else_is_left_running(lease_dir, monkeypatch)
 
 
 def test_failed_start_raises_and_cleans_up(lease_dir, monkeypatch):
-    ep = Endpoint("svc", "rss", "http://x/{query}", start="echo nope >&2; exit 3",
-                  stop="true", ready="http://r/", timeout=5)
+    ep = Endpoint("svc", "rss", "http://x/{query}",
+                  start=_py("import sys; sys.stderr.write('nope'); sys.exit(3)"),
+                  stop=_py("pass"), ready="http://r/", timeout=5)
     monkeypatch.setattr(ondemand, "is_ready", lambda e, timeout=2.0: False)
     with pytest.raises(ondemand.StartError, match="nope"):
         ondemand.ensure(ep, say=lambda _l: None)

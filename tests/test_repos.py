@@ -251,7 +251,7 @@ def ani(tmp_path, monkeypatch):
         return files[url]
     monkeypatch.setattr(repos, "fetch", fake_fetch)
     path = tmp_path / "config.toml"
-    path.write_text(config_mod.DEFAULT_CONFIG_TOML)
+    path.write_text(config_mod.DEFAULT_CONFIG_TOML, encoding="utf-8")
     a = Anirss(config_path=path, repos_file=tmp_path / "repos.json")
     a.files = files
     a.url = "https://r.example/index.json"
@@ -448,3 +448,9 @@ def test_the_api_never_reads_a_local_repo_file(ani, tmp_path):
         ani.preview_repo(str(f), allow_local=False)
     with pytest.raises(ValidationError):
         ani.trust_repo(f.as_uri(), key_text(), allow_local=False)
+
+
+def test_a_file_url_reads_on_this_platform(tmp_path):
+    f = tmp_path / "with space.json"
+    f.write_bytes(repo_file([PLAIN]))
+    assert repos.parse(repos.fetch(f.as_uri())).name == "Test repo"

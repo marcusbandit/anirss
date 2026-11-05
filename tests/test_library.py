@@ -2,6 +2,7 @@
 still downloading, finding a player, and the status split."""
 
 import os
+import sys
 
 import pytest
 
@@ -115,6 +116,7 @@ def test_status_splits_what_is_coming_from_what_finished_lately():
     assert library.show_of(torrents[3], "/dl/Anime") == ""
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin rights on Windows")
 def test_a_symlinked_library_still_skips_an_unfinished_batch_folder(tmp_path):
     real = tmp_path / "real"
     _show(real, ["Show - 01.mkv", "Batch/Show - 02.mkv"], "Show")
@@ -125,6 +127,7 @@ def test_a_symlinked_library_still_skips_an_unfinished_batch_folder(tmp_path):
     assert [e.number for e in eps] == [1.0]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin rights on Windows")
 def test_a_dangling_link_is_left_out_not_a_crash(tmp_path):
     folder = _show(tmp_path, ["Show - 01.mkv"], "Show")
     (folder / "Show - 02.mkv").symlink_to(tmp_path / "gone.mkv")

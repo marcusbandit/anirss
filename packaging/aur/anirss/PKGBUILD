@@ -2,7 +2,7 @@
 pkgname=anirss
 pkgver=0.5.0
 pkgrel=1
-pkgdesc="Search nyaa.si and hand the result to qBittorrent"
+pkgdesc="Search the endpoints you add and hand releases to qBittorrent"
 arch=('any')
 url="https://github.com/marcusbandit/anirss"
 license=('GPL-3.0-or-later')

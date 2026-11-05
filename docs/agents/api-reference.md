@@ -616,10 +616,10 @@ curl -H "Authorization: Bearer $TOKEN" $BASE/endpoints
 ```
 ```json
 {"endpoints": [
-  {"name": "nyaa", "kind": "nyaa", "url": "https://nyaa.si/?page=rss",
+  {"name": "nyaa", "kind": "nyaa", "url": "https://nyaa-style.example/?page=rss",
    "client_side_refine": false},
   {"name": "erai", "kind": "rss",
-   "url": "https://www.erai-raws.info/episodes/feed/?s={query}&token=***",
+   "url": "https://rss-search.example/feed/?s={query}&token=***",
    "client_side_refine": true}
 ]}
 ```
@@ -774,7 +774,7 @@ Body: `{"url": str (required), "enrich": bool?}`
 
 ```
 curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"url": "https://nyaa.si/?page=rss&q=Frieren"}' $BASE/feed
+  -d '{"url": "https://nyaa-style.example/?page=rss&q=Frieren"}' $BASE/feed
 ```
 ```json
 {"items": [ {Item}, ... ]}
@@ -874,7 +874,7 @@ curl -H "Authorization: Bearer $TOKEN" $BASE/subscriptions
 ```
 ```json
 {"subscriptions": [
-  {"name": "Frieren", "feed_url": "https://nyaa.si/?page=rss&q=...",
+  {"name": "Frieren", "feed_url": "https://nyaa-style.example/?page=rss&q=...",
    "save_path": "/home/me/Downloads/Anime/Frieren", "rule_enabled": true,
    "torrent_count": 28, "file_count": 28}
 ]}
@@ -913,7 +913,7 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 Status `201`:
 
 ```json
-{"name": "Frieren", "feed_url": "https://nyaa.si/?page=rss&q=...",
+{"name": "Frieren", "feed_url": "https://nyaa-style.example/?page=rss&q=...",
  "save_path": "/home/me/Downloads/Anime/Frieren",
  "must_contain": "", "must_not_contain": "", "tags": ["anirss"]}
 ```
@@ -936,7 +936,7 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"query": "Frieren 1080p", "endpoint": "nyaa"}' $BASE/subscriptions/preview
 ```
 ```json
-{"feed_url": "https://nyaa.si/?page=rss&q=Frieren+1080p",
+{"feed_url": "https://nyaa-style.example/?page=rss&q=Frieren+1080p",
  "must_contain": "", "must_not_contain": "", "endpoint_name": "nyaa"}
 ```
 

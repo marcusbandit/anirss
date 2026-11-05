@@ -454,7 +454,7 @@ def fetch(url: str, *, timeout: float = FETCH_TIMEOUT) -> bytes:
             reason = getattr(e, "reason", e)
             raise FetchError(f"repo unreachable: {reason}") from None
     else:
-        path = Path(urllib.parse.unquote(urllib.parse.urlsplit(url).path)
+        path = Path(urllib.request.url2pathname(urllib.parse.urlsplit(url).path)
                     if scheme == "file" else url).expanduser()
         if len(scheme) > 1 and scheme != "file":
             raise FetchError(f"a repo address starts with https:// (got {scheme}:)")

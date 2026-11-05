@@ -2,7 +2,9 @@
 
 import base64
 import json
+import ntpath
 import os
+import posixpath
 import re
 import shutil
 import urllib.parse
@@ -17,6 +19,17 @@ from anirss_lib.qbt.session import QbtSession
 
 
 # -------- path utilities --------
+
+def join_save_path(base: str, name: str) -> str:
+    """`base`/`name` the way the machine qBittorrent saves on writes paths: a
+    POSIX base (/srv/anime) joins with "/" even when anirss runs on Windows,
+    a Windows one (D:\\Anime) with "\\" even on Linux."""
+    if base.startswith("/") and "\\" not in base:
+        return posixpath.join(base, name)
+    if ntpath.splitdrive(base)[0] or "\\" in base:
+        return ntpath.join(base, name)
+    return os.path.join(base, name)
+
 
 def validate_name(name: str) -> str:
     """A subscription/download name becomes a directory under save_base, so
@@ -272,7 +285,7 @@ def subscribe_rule(qbt: QbtSession, feed_url: str, name: str, save_base: str,
     turned_on = ensure_rss_on(qbt) if enable_rss else []
     rss_off = [] if enable_rss else (rss_prefs_off(qbt) or [])
     name = _unique_rule_name(qbt, name, feed_url, endpoint_name)
-    save_path = os.path.join(save_base, name)
+    save_path = join_save_path(save_base, name)
     qbt.post("/api/v2/rss/addFeed", url=feed_url, path=name)
     rule = {
         "enabled": True,
@@ -433,7 +446,7 @@ def do_subscribe(qbt: QbtSession, feed_url: str, name: str, save_base: str,
 
 def do_download(qbt: QbtSession, links: list[str], name: str, save_base: str,
                 tags: list[str] | None = None) -> None:
-    save_path = os.path.join(save_base, name)
+    save_path = join_save_path(save_base, name)
     print(f"{C_CYN}==>{C_OFF} adding {len(links)} torrent(s) -> {save_path}"
           f"{_tags_note(tags)}")
     add_links(qbt, links, save_path, tags)
@@ -442,7 +455,7 @@ def do_download(qbt: QbtSession, links: list[str], name: str, save_base: str,
 def do_upload_local_torrent(qbt: QbtSession, path: str, name: str,
                             save_base: str, tags: list[str] | None = None) -> None:
     """Upload a local .torrent file's bytes to qBittorrent."""
-    save_path = os.path.join(save_base, name)
+    save_path = join_save_path(save_base, name)
     data = read_torrent_file(path)
     file_name = os.path.basename(path) or "file.torrent"
     print(f"{C_CYN}==>{C_OFF} uploading {C_BLD}{file_name}{C_OFF} "
@@ -536,7 +549,7 @@ def plan_remove(qbt: QbtSession, names: list[str], *, drop_torrents: bool,
             continue
         feeds = rule.get("affectedFeeds") or []
         feed_url = feeds[0] if feeds else ""
-        save_path = _norm_path(rule.get("savePath") or os.path.join(save_base, name))
+        save_path = _norm_path(rule.get("savePath") or join_save_path(save_base, name))
         feed_path = _find_feed_path(qbt, feed_url) if feed_url else None
         torrents = (_torrents_for_savepath(qbt, save_path)
                     if (drop_torrents or drop_files) else [])

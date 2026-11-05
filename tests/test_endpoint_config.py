@@ -1,6 +1,7 @@
 """Writing [[endpoint]] blocks into config.toml: the rest of the file stays
 as the user wrote it, and a bad spec never reaches the disk."""
 
+import sys
 import tomllib
 
 import pytest
@@ -88,7 +89,7 @@ def test_a_write_keeps_the_previous_file_as_bak(cfg):
 
 def test_add_to_a_fresh_default_config(tmp_path):
     p = tmp_path / "config.toml"
-    p.write_text(config.DEFAULT_CONFIG_TOML)
+    p.write_text(config.DEFAULT_CONFIG_TOML, encoding="utf-8")
     add_endpoint(p, check_spec(NYAA))
     add_endpoint(p, check_spec(RSS))
     assert config.load_config(p, bootstrap=False, strict=True)["endpoint"] == [
@@ -157,6 +158,7 @@ def test_replacing_a_hand_written_on_demand_endpoint_is_refused(cfg):
     assert cfg.read_text() == HAND_WRITTEN
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlinks need admin rights on Windows")
 def test_a_symlinked_config_stays_a_symlink(tmp_path):
     real = tmp_path / "dotfiles" / "config.toml"
     real.parent.mkdir()

@@ -15,7 +15,7 @@ from anirss_lib.errors import QbtAuthError
 
 def test_set_values_rewrites_keys_in_place_and_keeps_comments(tmp_path):
     path = tmp_path / "config.toml"
-    path.write_text(config_mod.DEFAULT_CONFIG_TOML)
+    path.write_text(config_mod.DEFAULT_CONFIG_TOML, encoding="utf-8")
     config_edit.set_values(path, "qbittorrent", {"url": "http://10.0.0.2:8080",
                                                   "username": "me"})
     text = path.read_text()

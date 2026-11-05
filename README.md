@@ -1,10 +1,10 @@
 # anirss
 
-A small CLI that searches [nyaa.si](https://nyaa.si) and hands the result to [qBittorrent](https://www.qbittorrent.org/) - either as a recurring RSS rule, a one-shot bulk download, or a single movie.
+A small CLI that finds anime releases on the search endpoints you add and hands them to [qBittorrent](https://www.qbittorrent.org/): a subscription that grabs every new episode by itself, a one-shot download, or a single movie. Then watch them in whatever player you like.
 
-Built around an interactive [fzf](https://github.com/junegunn/fzf) picker that lets you narrow a noisy result set into something you'd actually want to subscribe to.
+anirss ships with no endpoints and names no site. You add them from a signed [endpoint repo](#from-an-endpoint-repo), in the same format [AniBeam](https://github.com/marcusbandit/AniBeam) reads, or by hand: any nyaa-style site, any RSS search URL, a Jackett or Prowlarr feed.
 
-> Built with UNIX in mind - Linux and macOS. Windows users: WSL.
+It is built around an interactive [fzf](https://github.com/junegunn/fzf) picker that narrows a noisy result set into something you'd actually want to subscribe to. It runs on Linux, macOS and Windows, and it is also a Python library and a JSON HTTP API for apps that want a download backend.
 
 ## Install
 
@@ -127,12 +127,12 @@ While searching or refining, `Ctrl-E` switches endpoints on the fly: with two co
 On the initial search, if the active endpoint returns zero results or can't be reached, anirss automatically probes the other configured endpoints in priority order and switches to the first one with hits, e.g.:
 
 ```text
-nyaa: 0 results, switched to anirena (27)
+main: 0 results, switched to fallback (27)
 ```
 
 During refining (token picks, filters, excludes, Best Fit), zero-result fetches stay on the current endpoint and revert to the previous state; switch manually with Ctrl-E.
 
-Subscribing to the same show from a second endpoint doesn't overwrite the existing qBittorrent rule/feed; the name gets suffixed with ` @<endpoint>` (e.g. `Frieren @anirena`) so both stick around side by side.
+Subscribing to the same show from a second endpoint doesn't overwrite the existing qBittorrent rule/feed; the name gets suffixed with ` @<endpoint>` (e.g. `Frieren @fallback`) so both stick around side by side.
 
 ### Per-endpoint overrides and on-demand endpoints
 
@@ -239,7 +239,7 @@ Each client keeps its own session and saved password, so switching never logs th
 ```text
 anirss                      Prompt for a search.
 anirss [search query]       Search, refine, choose subscribe / download / movie.
-anirss <nyaa-rss-url>       Extract the search query from the URL and run it.
+anirss <nyaa-style-url>     Extract the search words from the URL and run them.
 anirss <magnet | .torrent>  Download a single torrent now.
 
 anirss -S <url>             Subscribe to a URL: skip search/refine, go to action menu.
@@ -283,8 +283,8 @@ ANIRSS_QBT_PASSWORD=... anirss --movie "Some Movie 2024"
 # Pipe the password instead of using the env var
 echo "$pw" | anirss --password-stdin --subscribe Frieren
 
-# Subscribe to a prebuilt nyaa RSS URL without ever opening the action menu
-ANIRSS_QBT_PASSWORD=... anirss --subscribe -S "https://nyaa.si/?page=rss&q=Frieren"
+# Subscribe to a prebuilt RSS search URL without ever opening the action menu
+ANIRSS_QBT_PASSWORD=... anirss --subscribe -S "https://nyaa-style.example/?page=rss&q=Frieren"
 ```
 
 `--subscribe`, `--download-all`, `--download N`, and `--movie` are mutually exclusive. Any one of them flips `anirss` into non-interactive mode: no fzf pickers, no `Name:` prompt (use `--name`, or the name is derived from the top result), and no password retry loop. Use the cached SID, the `ANIRSS_QBT_PASSWORD` env var, or one line read from stdin via `--password-stdin`. A `--password PW` CLI flag is intentionally not provided - `ps aux` and shell history both leak it.
@@ -295,7 +295,7 @@ Both packages (Brew, AUR) install a `zsh` completion at `…/zsh/site-functions/
 
 ### Note: bare-URL behavior changed in v0.2.0
 
-In v0.1.0, `anirss <nyaa-rss-url>` subscribed to the URL directly. In v0.2.0, it instead extracts the `q=` parameter and runs it as a fresh search - useful for "share a link, repeat the search" workflows. To subscribe explicitly, use `anirss -S <url>`. Pasting a non-nyaa URL will print an error pointing you at `-S`.
+In v0.1.0, `anirss <nyaa-style-url>` subscribed to the URL directly. In v0.2.0, it instead extracts the `q=` parameter and runs it as a fresh search, useful for "share a link, repeat the search" workflows. To subscribe explicitly, use `anirss -S <url>`. Pasting a URL that no endpoint owns prints an error pointing you at `-S`.
 
 ## Using anirss as a backend
 

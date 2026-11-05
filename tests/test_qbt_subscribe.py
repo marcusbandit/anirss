@@ -156,3 +156,9 @@ def test_unreadable_rss_settings_are_unknown_not_on():
     assert actions.rss_prefs_off(PrefsQbt({"locale": "en"})) is None
     assert actions.rss_prefs_off(PrefsQbt({"rss_processing_enabled": True,
                                            "rss_auto_downloading_enabled": True})) == []
+
+
+def test_save_paths_join_the_way_the_qbittorrent_machine_writes_them():
+    assert actions.join_save_path("/srv/anime", "Frieren") == "/srv/anime/Frieren"
+    assert actions.join_save_path("D:\\Anime", "Frieren") == "D:\\Anime\\Frieren"
+    assert actions.join_save_path("C:\\Users\\me/Downloads/Anime", "X").endswith("\\X")
