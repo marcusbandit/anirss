@@ -551,7 +551,7 @@ No auth. The Host guard still applies.
 curl $BASE/health
 ```
 ```json
-{"ok": true, "version": "0.7.0", "features": ["qbt_clients", "qbt_env_session", "endpoint_writes", "endpoint_repos", "doctor", "rss_autoenable", "subscription_save_path"]}
+{"ok": true, "version": "0.8.0", "features": ["qbt_clients", "qbt_env_session", "endpoint_writes", "endpoint_repos", "doctor", "rss_autoenable", "subscription_save_path"]}
 ```
 
 `features` names what this anirss can do. Check for the one you rely on rather
