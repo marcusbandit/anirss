@@ -237,8 +237,8 @@ Subscribing and downloading (these need qBittorrent):
 | Method | Returns | Notes |
 | --- | --- | --- |
 | `subscription_spec(query, items, endpoint=None)` | `SubscriptionSpec` | What `subscribe` would register. Does not touch qBittorrent (an Erai endpoint may cost one probe request). |
-| `subscribe(query, *, endpoint=None, items=None, name=None, hidden=False, client=None)` | `SubscribeResult` | `items` are fetched (no fallback) if omitted; `NotFoundError` if there are none. `name` defaults to the show name parsed from the first item. |
-| `subscribe_feed(url, *, name=None, hidden=False, client=None)` | `SubscribeResult` | Subscribe to a raw RSS URL as is. |
+| `subscribe(query, *, endpoint=None, items=None, name=None, hidden=False, client=None, save_path=None)` | `SubscribeResult` | `items` are fetched (no fallback) if omitted; `NotFoundError` if there are none. `name` defaults to the show name parsed from the first item. `save_path`, an absolute folder, is where the rule saves instead of `<save_base>/<name>`; a relative one, or one given with `hidden`, is `ValidationError`. |
+| `subscribe_feed(url, *, name=None, hidden=False, client=None, save_path=None)` | `SubscribeResult` | Subscribe to a raw RSS URL as is. `save_path` as for `subscribe`. |
 
 Both subscribe calls take `enable_rss=True`: they turn on qBittorrent's RSS
 fetching and RSS auto-download first when they are off (a stock qBittorrent
@@ -565,8 +565,8 @@ has no `features` at all). A name keeps its meaning once listed.
 | `endpoint_writes` | 0.6.0 | [POST /endpoints](#post-endpoints) and [DELETE /endpoints/{name}](#delete-endpointsname), and a fresh config with no endpoints (`409 no_endpoints` until one is added). |
 | `doctor` | 0.7.0 | [GET /doctor](#get-doctor). |
 | `rss_autoenable` | 0.7.0 | Subscribing turns on qBittorrent's RSS fetching and auto-download when they are off, and `SubscribeResult.turned_on` says so. |
-| `subscription_save_path` | 0.8.0 | [POST /subscriptions](#post-subscriptions) takes `save_path`, so a subscription's rule saves into a folder of the app's choosing from the start. |
 | `endpoint_repos` | 0.7.0 | The [`/repos` routes](#endpoint-repos-routes): signed endpoint repos in AniBeam's format, installed into `config.toml`. |
+| `subscription_save_path` | 0.8.0 | [POST /subscriptions](#post-subscriptions) takes `save_path`, so a subscription's rule saves into a folder of the app's choosing from the start. |
 | `qbt_env_session` | 0.5.0 | An `ANIRSS_QBT_URL` that the config does not name keeps its own session and saved password, so an app that points anirss at another qBittorrent never sends it the configured one's. An anirss without it fails at nothing, it only misbehaves quietly, so an app that sets `ANIRSS_QBT_URL` should refuse one that does not list it. |
 
 Every route that reaches qBittorrent (`/qbt/status`, `/subscriptions` and
@@ -904,7 +904,8 @@ saves under `[downloads].hidden_base` instead of `save_base`. Either form takes
 `save_path: str?`, an absolute folder as qBittorrent names it: the rule saves
 there instead of under `<save_base>/<name>`, so a show that already has a
 folder gets its episodes in it from the first match. A relative or malformed
-one is `400 validation_error` before anything reaches qBittorrent. Check for
+one, or one sent with `hidden: true`, is `400 validation_error` before anything
+reaches qBittorrent. Check for
 the `subscription_save_path` feature before sending it; an older anirss
 ignores the field.
 `enable_rss` (default `true`) turns qBittorrent's RSS fetching and

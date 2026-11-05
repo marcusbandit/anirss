@@ -224,9 +224,14 @@ def _check_link(link: object) -> str | None:
     return None if any(c.isspace() for c in link) else link
 
 
-def _check_save_path(path: str) -> str:
+def _check_save_path(path: str | None, *, hidden: bool = False) -> str | None:
     """An absolute folder, as the client names it, with no control
-    characters. Raises ValidationError otherwise."""
+    characters, or None when none was given. Raises ValidationError
+    otherwise, and for one given with `hidden`, which names a folder too."""
+    if path is None:
+        return None
+    if hidden:
+        raise ValidationError("give save_path or hidden, not both")
     path = (path or "").strip()
     if not path or not (path.startswith("/") or ntpath.isabs(path)):
         raise ValidationError("save_path must be an absolute path")
@@ -757,8 +762,7 @@ class Anirss:
         query = (query or "").strip()
         if not query:
             raise ValidationError("empty query")
-        if save_path is not None:
-            save_path = _check_save_path(save_path)
+        save_path = _check_save_path(save_path, hidden=hidden)
         if items is None:
             items = self.search(query, endpoint, fallback=False).items
         if not items:
@@ -778,8 +782,7 @@ class Anirss:
                        save_path: str | None = None) -> SubscribeResult:
         """Subscribe to a raw RSS feed URL as-is (`anirss -S <url>`), into
         `save_path` when given, as subscribe() does."""
-        if save_path is not None:
-            save_path = _check_save_path(save_path)
+        save_path = _check_save_path(save_path, hidden=hidden)
         items = self.fetch_feed(url)
         if not items:
             raise NotFoundError(f"no items returned by {url}")
@@ -793,9 +796,8 @@ class Anirss:
         """Add magnet / http(s) .torrent links now, into save_base/<name>, or
         into `save_path` when given: a show's own folder, wherever it is."""
         links = _check_links(links)
-        if save_path is not None:
-            save_path = _check_save_path(save_path)
-        else:
+        save_path = _check_save_path(save_path)
+        if save_path is None:
             save_path = actions.join_save_path(self._save_base(hidden, client), validate_name(name))
         return self._add_links(links, save_path, client)
 

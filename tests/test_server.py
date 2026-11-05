@@ -733,7 +733,17 @@ def test_subscribe_into_a_save_path(env, tmp_path, monkeypatch):
     status, body, _ = env.c.post("/subscriptions", {
         "feed_url": "https://feed.example/rss", "name": "Feedy", "save_path": show})
     assert status == 201 and body["save_path"] == show
-    assert json.loads(env.qbt.posted("/api/v2/rss/setRule")[1]["ruleDef"])["savePath"] == show
+    feed_rule = json.loads(env.qbt.posted("/api/v2/rss/setRule")[1]["ruleDef"])
+    assert feed_rule["savePath"] == show
+    assert feed_rule["torrentParams"]["save_path"] == show
+
+
+def test_subscribe_save_path_and_hidden_together_400(env):
+    status, body, _ = env.c.post("/subscriptions", {
+        "query": "Frieren", "items": _dump(NYAA_ITEMS), "hidden": True,
+        "save_path": "/media/TV/Frieren"})
+    assert status == 400 and body["error"]["type"] == "validation_error"
+    assert env.qbt.posts == []
 
 
 @pytest.mark.parametrize("bad", ["relative/dir", "", "/a\nb"])
