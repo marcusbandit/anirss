@@ -356,6 +356,7 @@ class Handler(BaseHTTPRequestHandler):
             "/repos/endpoints": {"GET": self.h_repo_endpoints},
             "/repos/install": {"POST": self.h_repo_install},
             "/repos/update": {"POST": self.h_repo_update},
+            "/doctor": {"GET": self.h_doctor},
         }
         if route in table:
             fn = table[route].get(method)
@@ -395,6 +396,12 @@ class Handler(BaseHTTPRequestHandler):
     def h_endpoint_remove(self, q, name):
         self.ani.remove_endpoint(name)
         return 200, {"removed": name}
+
+    def h_doctor(self, q, _):
+        checks = self.ani.doctor(search=_bool(q.get("search"), True),
+                                 refresh=_bool(q.get("refresh"), True))
+        return 200, {"ok": not any(c.status == "fail" for c in checks),
+                     "checks": to_jsonable(checks)}
 
     def h_repos(self, q, _):
         repos = self.ani.repos(refresh=_bool(q.get("refresh")))

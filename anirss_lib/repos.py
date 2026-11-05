@@ -41,6 +41,7 @@ from pathlib import Path
 
 import anirss_lib
 from anirss_lib import ed25519
+from anirss_lib.compat import lock_file, unlock_file
 from anirss_lib.config import STATE_DIR
 from anirss_lib.errors import (
     ConfigError,
@@ -588,21 +589,15 @@ def save_state(state: State, path: Path | None = None) -> None:
 @contextlib.contextmanager
 def _locked(path: Path):
     """The state lock: a thread lock, plus a lock file other anirss processes
-    (the CLI beside a running --serve) take too. POSIX only for the file;
-    elsewhere the thread lock alone."""
+    (the CLI beside a running --serve) take too."""
     with _state_lock:
-        try:
-            import fcntl
-        except ImportError:
-            yield
-            return
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path.with_name(path.name + ".lock"), "a") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
+        with open(path.with_name(path.name + ".lock"), "a+") as f:
+            lock_file(f)
             try:
                 yield
             finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
+                unlock_file(f)
 
 
 def update_state(fn, path: Path | None = None):

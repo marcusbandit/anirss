@@ -34,6 +34,13 @@ Usage:
     anirss -Rns <name>...         + everything (clean uninstall).
     anirss --noconfirm            Skip the y/N prompt for -R*.
 
+Getting started:
+    anirss --setup                Walk through connecting qBittorrent, where
+                                  downloads go and adding endpoints. Opens by
+                                  itself on the first search with nothing set up.
+    anirss --doctor [--no-search] Check the whole setup; says how to fix each
+                                  problem. --no-search skips the test searches.
+
 Endpoints (anirss ships with none; add them from a repo or by hand):
     anirss --add-repo <url>       Trust an endpoint repo: checks its signature,
                                   shows its key, asks first. (AniBeam's repos work.)

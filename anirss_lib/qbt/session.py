@@ -348,6 +348,21 @@ def _qbt_reachable(base_url: str, timeout: float = 3.0) -> bool:
         return False
 
 
+def qbt_answer(base_url: str, timeout: float = 3.0) -> str | None:
+    """What answers at base_url: "qbt" when it looks like qBittorrent's Web
+    UI (its version route says a version, or refuses with 401/403 before a
+    login), "other" for any other web server, None when nothing answers."""
+    req = urllib.request.Request(f"{base_url.rstrip('/')}/api/v2/app/version")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read(64).decode("utf-8", "replace").strip()
+        return "qbt" if re.fullmatch(r"v?\d+(\.\d+)+\S*", body) else "other"
+    except urllib.error.HTTPError as e:
+        return "qbt" if e.code in (401, 403) else "other"
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError):
+        return None
+
+
 def _is_local_url(base_url: str) -> bool:
     """True when base_url points at this machine, so we could start qBittorrent."""
     return is_local_url(base_url)

@@ -147,9 +147,24 @@ def _needs(d) -> str:
     return "asks for " + ", ".join(f.label for f in d.auth)
 
 
+def needs_short(d) -> str:
+    """What an endpoint asks for, short enough for one row."""
+    if len(d.auth) == 1:
+        return f"asks for {d.auth[0].label}"
+    return f"asks for {len(d.auth)} settings" if d.auth else ""
+
+
 def _row(mark: str, ident: str, name: str, note: str, width: int) -> str:
+    from anirss_lib import terminal
     line = f"  {mark} {ident:<{width}}  {name:<24}"
+    room = terminal.get_size().columns - (width + 32)
+    if note and len(note) > room:
+        note = needs_short_text(note, room)
     return f"{line} {C_DIM}{note}{C_OFF}" if note else line.rstrip()
+
+
+def needs_short_text(note: str, room: int) -> str:
+    return note[:max(10, room - 1)].rstrip(" ,") + "…"
 
 
 # ---- repos -----------------------------------------------------------------
@@ -180,8 +195,13 @@ def add_repo(ani, url: str, *, noconfirm: bool = False) -> bool:
     print(f"{C_GRN}signature checks out.{C_OFF}")
     print_index(url, index)
     print()
-    print(f"{C_DIM}Trusting a repo means anirss sends your searches to the sites its "
-          f"endpoints name. If someone runs the repo for you, check the key with them.{C_OFF}")
+    import textwrap
+
+    from anirss_lib import terminal
+    print(C_DIM + textwrap.fill(
+        "Trusting a repo means anirss sends your searches to the sites its endpoints "
+        "name. If someone runs the repo for you, check the key with them.",
+        min(78, terminal.get_size().columns - 2)) + C_OFF)
     if not confirm("Trust this repo?", noconfirm):
         print(f"{C_DIM}not trusted, nothing saved.{C_OFF}")
         return False
@@ -374,16 +394,18 @@ def cmd_endpoints(ani, opts: _Opts) -> None:
               f"{ani.endpoint_view(ep)['url']}  {C_DIM}{where}{C_OFF}")
 
 
-def cmd_add_endpoint(ani, opts: _Opts) -> None:
+def add_by_hand(ani, url: str, *, name: str | None = None, noconfirm: bool = False):
+    """Guess, try and add one site by its address. Returns the endpoint, or
+    None when the user said no. Raises AnirssError."""
     from anirss_lib import endpoint_config
     from anirss_lib import endpoints as endpoints_mod
     from anirss_lib.endpoints import Endpoint
-    url = _one(opts, "anirss --add-endpoint <url> [--name <name>]")
     taken = tuple(e.name for e in ani.endpoints())
     try:
-        spec = endpoint_config.guess_spec(url, name=opts.name, taken=taken)
+        spec = endpoint_config.guess_spec(url, name=name, taken=taken)
     except FetchError as e:
-        die(f"{e}. Check the address, or put {{query}} where the search words go")
+        raise FetchError(f"{e}. Check the address, or put {{query}} where the "
+                         f"search words go") from None
     except ValidationError:
         if "{query}" in url or not sys.stdin.isatty():
             raise
@@ -392,7 +414,7 @@ def cmd_add_endpoint(ani, opts: _Opts) -> None:
               f"words you searched for and anirss puts {{query}} there.{C_OFF}")
         words = ask("Search words in the address")
         spec = endpoint_config.guess_spec(endpoint_config.put_query(url, words),
-                                          name=opts.name, taken=taken)
+                                          name=name, taken=taken)
     ep = Endpoint(name=spec["name"], kind=spec["kind"], url=spec["url"],
                   category=spec.get("category", "1_0"), filter=spec.get("filter", "0"))
     print(f"{C_CYN}==>{C_OFF} trying a search on {spec['name']} ({spec['kind']})")
@@ -401,12 +423,18 @@ def cmd_add_endpoint(ani, opts: _Opts) -> None:
         print(f"  {C_GRN}answers{C_OFF} ({n} result{'' if n == 1 else 's'} for a test search)")
     except FetchError as e:
         print(f"  {C_YEL}{e}{C_OFF}")
-        if not confirm("It did not answer. Add it anyway?", opts.noconfirm):
-            print(f"{C_DIM}cancelled.{C_OFF}")
-            return
+        if not confirm("It did not answer. Add it anyway?", noconfirm):
+            print(f"{C_DIM}not added.{C_OFF}")
+            return None
     ep, replaced = ani.add_endpoint(spec)
     print(f"{C_GRN}✓{C_OFF} {'Replaced' if replaced else 'Added'} {C_BLD}{ep.name}{C_OFF}. "
           f"Search it: {C_BLD}anirss -e {ep.name} <words>{C_OFF}")
+    return ep
+
+
+def cmd_add_endpoint(ani, opts: _Opts) -> None:
+    url = _one(opts, "anirss --add-endpoint <url> [--name <name>]")
+    add_by_hand(ani, url, name=opts.name, noconfirm=opts.noconfirm)
 
 
 def cmd_remove_endpoint(ani, opts: _Opts) -> None:

@@ -94,7 +94,8 @@ LOGIN_COOLDOWN_S = 300
 #                    session and saved password, so pointing anirss at another
 #                    qBittorrent never sends it the configured one's. An anirss
 #                    without it fails at nothing; it only misbehaves quietly.
-FEATURES = ("qbt_clients", "qbt_env_session", "endpoint_writes", "endpoint_repos")
+FEATURES = ("qbt_clients", "qbt_env_session", "endpoint_writes", "endpoint_repos",
+            "doctor", "rss_autoenable")
 
 
 class SearchResult(NamedTuple):
@@ -496,6 +497,17 @@ class Anirss:
                 definition=new.raw)
         repos_mod.update_state(record, self.repos_file)
         return ep
+
+    def doctor(self, *, search: bool = True, refresh: bool = True,
+               fzf: bool = False) -> list:
+        """Checks the whole setup: each qBittorrent client (answers, login,
+        version, RSS preferences), the endpoints (one test search each with
+        `search`), the repos (fetched again with `refresh`), the download
+        folders, and fzf when `fzf` (the CLI's picker; a frontend has no use
+        for it). Returns doctor.Check objects; never raises for what it finds,
+        never prompts, never changes anything."""
+        from anirss_lib import doctor
+        return doctor.run(self, search=search, refresh=refresh, fzf=fzf)
 
     def installed_endpoints(self) -> dict[str, repos_mod.Installed]:
         """Endpoint name to where it was installed from, for endpoints that

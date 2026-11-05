@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sys
 
 import anirss_lib
@@ -19,7 +20,7 @@ from anirss_lib.cli.pickers import (
 from anirss_lib.cli.urls import (
     UrlKind, classify_url, endpoint_hosts, extract_nyaa_query,
 )
-from anirss_lib.compat import utf8_stdio
+from anirss_lib.compat import install_hint, utf8_stdio
 from anirss_lib.config import (
     AnirssConfig, CONFIG_PATH, load_config, migrate_config,
 )
@@ -227,6 +228,14 @@ def _handle_meta_flags(argv: list[str], cfg: AnirssConfig) -> bool:
         return True
     if a == "--migrate-config":
         migrate_config()
+        return True
+    if a == "--setup":
+        from anirss_lib.cli.setup import cmd_setup
+        cmd_setup(cfg)
+        return True
+    if a == "--doctor":
+        from anirss_lib.cli.doctor import cmd_doctor
+        cmd_doctor(argv[1:])
         return True
     from anirss_lib.cli import repos as repo_cli
     if a in repo_cli.FLAGS:
@@ -581,6 +590,12 @@ def _run_interactive(initial_query: str, force_url: str | None,
 
     # Phase 1 - gather intent inside the alt screen (only if we still
     # have a UI to show; ONE_SHOT / LOCAL_TORRENT bypassed it above).
+    if download_links is None and local_torrent_path is None and not shutil.which("fzf"):
+        # Without fzf every picker returns as if cancelled, so the search
+        # would bounce back to its prompt forever.
+        die(f"the interactive search needs fzf, which is not installed. Install it: "
+            f"{install_hint()}. Without it, --subscribe, --download N, "
+            f"--download-all and --movie still work")
     if download_links is None and local_torrent_path is None:
         with terminal.alt_screen():
             if force_url is not None:
@@ -775,12 +790,24 @@ def _main() -> None:
         return
     # After the op flags: -Q, -Sy and -R only talk to qBittorrent and must
     # work on a config with no endpoint yet.
+    # A first interactive search with nothing to search opens setup first.
+    # A magnet, a .torrent or a URL to subscribe to needs no endpoint.
+    if (not endpoint_list and not parsed.non_interactive and force_url is None
+            and parsed.local_torrent_path is None
+            and classify_url(" ".join(parsed.positional).strip()) == UrlKind.NOT_URL
+            and sys.stdin.isatty() and sys.stdout.isatty()):
+        from anirss_lib.cli import setup
+        if setup.needs_onboarding(cfg) and setup.run(cfg, first_run=True):
+            cfg = load_config()
+            responsive.set_display(cfg["display"])
+            pin_client(cfg, argv, client)
+            endpoint_list = load_endpoints(cfg)
     try:
         eps = EndpointState(endpoint_list, parsed.endpoint)
     except NoEndpointsError:
         die("no search endpoints yet. Add an endpoint repo with "
             "`anirss --add-repo <url>`, or one site by hand with "
-            "`anirss --add-endpoint <url>`")
+            "`anirss --add-endpoint <url>` (`anirss --setup` walks you through it)")
 
     # If -S consumed the URL into force_url, drop -S and the URL from positional.
     if force_url is not None:
