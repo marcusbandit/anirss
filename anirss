@@ -9,11 +9,5 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 if __name__ == "__main__":
-    try:
-        # The import sits inside the try too: Ctrl-C right after launch lands
-        # while Python is still loading modules.
-        from anirss_lib.main import main
-        main()
-    except KeyboardInterrupt:
-        print(file=sys.stderr)
-        sys.exit(130)
+    from anirss_lib.entry import main
+    main()

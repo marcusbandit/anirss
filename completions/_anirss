@@ -32,6 +32,7 @@ ops=(
     '-T:upload a local .torrent file'
     '-Th:upload — save under hidden_base'
     '--noconfirm:skip the y/N prompt for -R*'
+    '--:treat the rest as search text'
     '--no-seed:set qB to pause torrents at ratio 0'
     '--config:print resolved config and exit'
     '--migrate-config:append new default config sections'

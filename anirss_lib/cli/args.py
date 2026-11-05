@@ -32,6 +32,10 @@ class ParsedArgs:
     # Causes save_base to be replaced with [downloads].hidden_base.
     hidden: bool = False
 
+    # True when the query came after `--`: its first word is search text,
+    # never an op flag, so `anirss -- -Rns x` does not remove anything.
+    literal_query: bool = False
+
     @property
     def action_flag_count(self) -> int:
         return sum([
@@ -125,6 +129,7 @@ def parse_cli_args(argv: list[str]) -> ParsedArgs:
         a = argv[i]
         if a == "--":
             # Everything after `--` is query text, even `-v` or `--help`.
+            out.literal_query = not out.positional
             out.positional.extend(argv[i + 1:])
             break
         if a == "--noconfirm":
@@ -173,16 +178,17 @@ def parse_cli_args(argv: list[str]) -> ParsedArgs:
             # query, which is almost never what the user meant - and risks
             # downloading random hits matching the flag name. Fail loud.
             die(f"unknown flag: {a}")
-        elif (a.startswith("-") and len(a) > 1 and not out.positional
-                and parse_op_flag(a) is None):
-            # A leading `-x` that is no op flag is a mistyped flag, not a
-            # search: `anirss -v` used to search nyaa for "-v". An exclude
-            # term still works after a word (`anirss Frieren -dub`).
-            die(f"unknown flag: {a} (see `anirss --help`; "
-                f"to search for it, use `anirss -- {a}`)")
         else:
             out.positional.append(a)
         i += 1
+
+    if (not out.literal_query and out.positional
+            and parse_op_flag(out.positional[0]) is None
+            and all(t.startswith("-") and len(t) > 1 for t in out.positional)):
+        # Nothing but dash words is a mistyped flag, not a search: `anirss -v`
+        # used to search nyaa for "-v". An exclude term next to a real word
+        # still works (`anirss Frieren -dub`, `anirss -dub Frieren`).
+        die(f"unknown flag: {out.positional[0]} (see `anirss --help`)")
 
     if out.action_flag_count > 1:
         die("at most one of --subscribe, --download-all, --download, --movie")
