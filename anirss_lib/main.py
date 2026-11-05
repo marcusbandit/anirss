@@ -740,6 +740,11 @@ def main() -> None:
         _main()
     except AnirssError as e:
         die(str(e))
+    except KeyboardInterrupt:
+        # Ctrl-C is the user changing their mind, not a crash: no traceback,
+        # just the shell's usual 130.
+        print(file=sys.stderr)
+        sys.exit(130)
 
 
 def _main() -> None:

@@ -123,6 +123,10 @@ def parse_cli_args(argv: list[str]) -> ParsedArgs:
     i = 0
     while i < len(argv):
         a = argv[i]
+        if a == "--":
+            # Everything after `--` is query text, even `-v` or `--help`.
+            out.positional.extend(argv[i + 1:])
+            break
         if a == "--noconfirm":
             out.noconfirm = True
         elif a == "--subscribe":
@@ -169,6 +173,13 @@ def parse_cli_args(argv: list[str]) -> ParsedArgs:
             # query, which is almost never what the user meant - and risks
             # downloading random hits matching the flag name. Fail loud.
             die(f"unknown flag: {a}")
+        elif (a.startswith("-") and len(a) > 1 and not out.positional
+                and parse_op_flag(a) is None):
+            # A leading `-x` that is no op flag is a mistyped flag, not a
+            # search: `anirss -v` used to search nyaa for "-v". An exclude
+            # term still works after a word (`anirss Frieren -dub`).
+            die(f"unknown flag: {a} (see `anirss --help`; "
+                f"to search for it, use `anirss -- {a}`)")
         else:
             out.positional.append(a)
         i += 1

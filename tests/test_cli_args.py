@@ -149,3 +149,32 @@ def test_endpoint_flag_missing_value_dies(monkeypatch):
     monkeypatch.setattr(a, "die", fake_die)
     with pytest.raises(SystemExit):
         a.parse_cli_args(["-e"])
+
+
+def _capture_die(monkeypatch):
+    captured = {}
+    def fake_die(msg):
+        captured["msg"] = msg
+        raise SystemExit(1)
+    monkeypatch.setattr(a, "die", fake_die)
+    return captured
+
+
+@pytest.mark.parametrize("flag", ["-v", "-x", "-dub"])
+def test_parse_rejects_leading_unknown_short_flag(monkeypatch, flag):
+    """`anirss -v` used to search nyaa for "-v". A leading single-dash token
+    that is no op flag is a typo, so it errors."""
+    captured = _capture_die(monkeypatch)
+    with pytest.raises(SystemExit):
+        a.parse_cli_args([flag])
+    assert flag in captured["msg"]
+
+
+def test_parse_keeps_op_flags_in_positional():
+    p = a.parse_cli_args(["-Rn", "Frieren"])
+    assert p.positional == ["-Rn", "Frieren"]
+
+
+def test_parse_double_dash_passes_everything_through():
+    p = a.parse_cli_args(["--", "-v", "--help"])
+    assert p.positional == ["-v", "--help"]
