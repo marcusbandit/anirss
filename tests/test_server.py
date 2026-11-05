@@ -168,7 +168,8 @@ def test_health_needs_no_token(env):
     assert status == 200
     assert body["ok"] is True and body["version"] == env.ani.version
     assert body["features"] == ["qbt_clients", "qbt_env_session", "endpoint_writes",
-                                "endpoint_repos", "doctor", "rss_autoenable"]
+                                "endpoint_repos", "doctor", "rss_autoenable",
+                                "subscription_save_path"]
 
 
 @pytest.mark.parametrize("token", [None, "wrong", "to", "tokk"])
@@ -714,6 +715,33 @@ def test_subscribe_with_feed_url(env, monkeypatch):
     assert body["save_path"] == os.path.join(str(env.save), "Feedy")
     (feed,) = env.qbt.posted("/api/v2/rss/addFeed")
     assert feed["url"] == "https://feed.example/rss"
+
+
+def test_subscribe_into_a_save_path(env, tmp_path, monkeypatch):
+    # A library show's own folder: the rule saves there from the start, never under
+    # save_base/<name> first, whichever form subscribes it.
+    show = str(tmp_path / "TV" / "Avatar Seven Havens")
+    status, body, _ = env.c.post("/subscriptions", {
+        "query": "Frieren", "items": _dump(NYAA_ITEMS), "name": "Frieren",
+        "save_path": show})
+    assert status == 201 and body["save_path"] == show
+    (rule,) = env.qbt.posted("/api/v2/rss/setRule")
+    rule_def = json.loads(rule["ruleDef"])
+    assert rule_def["savePath"] == show
+    assert rule_def["torrentParams"]["save_path"] == show
+    monkeypatch.setattr("anirss_lib.api.fetch_rss", lambda url, *a: RSS_ITEMS)
+    status, body, _ = env.c.post("/subscriptions", {
+        "feed_url": "https://feed.example/rss", "name": "Feedy", "save_path": show})
+    assert status == 201 and body["save_path"] == show
+    assert json.loads(env.qbt.posted("/api/v2/rss/setRule")[1]["ruleDef"])["savePath"] == show
+
+
+@pytest.mark.parametrize("bad", ["relative/dir", "", "/a\nb"])
+def test_subscribe_save_path_must_be_absolute(env, bad):
+    status, body, _ = env.c.post("/subscriptions", {
+        "query": "Frieren", "items": _dump(NYAA_ITEMS), "save_path": bad})
+    assert status == 400 and body["error"]["type"] == "validation_error"
+    assert env.qbt.posts == []
 
 
 def test_subscribe_with_feed_url_empty_feed_404(env, monkeypatch):

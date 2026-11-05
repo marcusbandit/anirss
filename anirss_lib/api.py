@@ -95,7 +95,7 @@ LOGIN_COOLDOWN_S = 300
 #                    qBittorrent never sends it the configured one's. An anirss
 #                    without it fails at nothing; it only misbehaves quietly.
 FEATURES = ("qbt_clients", "qbt_env_session", "endpoint_writes", "endpoint_repos",
-            "doctor", "rss_autoenable")
+            "doctor", "rss_autoenable", "subscription_save_path")
 
 
 class SearchResult(NamedTuple):
@@ -744,9 +744,11 @@ class Anirss:
     def subscribe(self, query: str, *, endpoint: str | None = None,
                   items: list[Item] | None = None, name: str | None = None,
                   hidden: bool = False, client: str | None = None,
-                  enable_rss: bool = True) -> SubscribeResult:
+                  enable_rss: bool = True,
+                  save_path: str | None = None) -> SubscribeResult:
         """Subscribe to a search: a qB RSS feed + auto-download rule saving
-        under save_base/<name> (hidden_base with hidden=True). `items` are
+        under save_base/<name> (hidden_base with hidden=True), or into
+        `save_path` when given: a show's own folder, wherever it is. `items` are
         the (refined) results the search returned; fetched when omitted.
         `name` defaults to the show name parsed from the first result.
         `enable_rss` turns qBittorrent's RSS fetching and auto-download on
@@ -755,6 +757,8 @@ class Anirss:
         query = (query or "").strip()
         if not query:
             raise ValidationError("empty query")
+        if save_path is not None:
+            save_path = _check_save_path(save_path)
         if items is None:
             items = self.search(query, endpoint, fallback=False).items
         if not items:
@@ -766,19 +770,23 @@ class Anirss:
             endpoint_name=spec.endpoint_name,
             must_not_contain=spec.must_not_contain,
             must_contain=spec.must_contain, tags=self._tags(client),
-            enable_rss=enable_rss), client)
+            enable_rss=enable_rss, save_path=save_path), client)
 
     def subscribe_feed(self, url: str, *, name: str | None = None,
                        hidden: bool = False, client: str | None = None,
-                       enable_rss: bool = True) -> SubscribeResult:
-        """Subscribe to a raw RSS feed URL as-is (`anirss -S <url>`)."""
+                       enable_rss: bool = True,
+                       save_path: str | None = None) -> SubscribeResult:
+        """Subscribe to a raw RSS feed URL as-is (`anirss -S <url>`), into
+        `save_path` when given, as subscribe() does."""
+        if save_path is not None:
+            save_path = _check_save_path(save_path)
         items = self.fetch_feed(url)
         if not items:
             raise NotFoundError(f"no items returned by {url}")
         name = self._name_for(name, items, "anirss")
         return self._with_qbt(lambda q: actions.subscribe_rule(
             q, url, name, self._save_base(hidden, client), tags=self._tags(client),
-            enable_rss=enable_rss), client)
+            enable_rss=enable_rss, save_path=save_path), client)
 
     def download(self, links: list[str], *, name: str, hidden: bool = False,
                  client: str | None = None, save_path: str | None = None) -> AddResult:
