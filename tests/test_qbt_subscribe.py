@@ -111,6 +111,16 @@ def test_do_subscribe_without_tags_keeps_legacy_rule_shape():
     assert rule["savePath"] == "/tmp/save/Show"
 
 
+def test_a_rule_given_a_save_path_saves_there_and_not_under_the_base():
+    qbt = RecordingQbt()
+    res = actions.subscribe_rule(qbt, "http://feed", "Show", "/tmp/save",
+                                 tags=["anirss"], save_path="/media/TV/Show")
+    rule = _rule_from(qbt)
+    assert rule["savePath"] == "/media/TV/Show"
+    assert rule["torrentParams"]["save_path"] == "/media/TV/Show"
+    assert res.save_path == "/media/TV/Show"
+
+
 class PrefsQbt(RecordingQbt):
     """A qBittorrent whose preferences say what a fresh install says."""
 

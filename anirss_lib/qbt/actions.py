@@ -276,16 +276,19 @@ def subscribe_rule(qbt: QbtSession, feed_url: str, name: str, save_base: str,
                    endpoint_name: str = "", must_not_contain: str = "",
                    must_contain: str = "",
                    tags: list[str] | None = None, *,
-                   enable_rss: bool = True) -> SubscribeResult:
+                   enable_rss: bool = True,
+                   save_path: str | None = None) -> SubscribeResult:
     """Register `feed_url` as a qB RSS feed plus an auto-download rule that
-    saves under save_base/<name>. With `enable_rss`, turns on qBittorrent's
+    saves under save_base/<name>, or into `save_path` when given: a show's own
+    folder, so the rule never saves anywhere else first. With `enable_rss`, turns on qBittorrent's
     RSS fetching and auto-download first when they are off (a subscription
     does nothing without them); without it, reports them in `rss_off`.
     Silent; raises QbtError."""
     turned_on = ensure_rss_on(qbt) if enable_rss else []
     rss_off = [] if enable_rss else (rss_prefs_off(qbt) or [])
     name = _unique_rule_name(qbt, name, feed_url, endpoint_name)
-    save_path = join_save_path(save_base, name)
+    if save_path is None:
+        save_path = join_save_path(save_base, name)
     qbt.post("/api/v2/rss/addFeed", url=feed_url, path=name)
     rule = {
         "enabled": True,
