@@ -229,6 +229,11 @@ def _handle_meta_flags(argv: list[str], cfg: AnirssConfig) -> bool:
     if a == "--migrate-config":
         migrate_config()
         return True
+    if a in ("--play", "--status"):
+        from anirss_lib.cli import library as library_cli
+        init_log(cfg["logging"]["log_path"])
+        (library_cli.cmd_play if a == "--play" else library_cli.cmd_status)(cfg, argv[1:])
+        return True
     if a == "--setup":
         from anirss_lib.cli.setup import cmd_setup
         cmd_setup(cfg)
@@ -751,6 +756,19 @@ def _main() -> None:
         return
 
     argv, client = take_client_flag(sys.argv[1:])
+
+    # Hidden, for --play's completion: the show folders of the client the
+    # command line picks (`-c NAME`), by name only, so a TAB never walks a
+    # whole library.
+    if argv[:1] == ["--_shows"]:
+        from anirss_lib import library
+        from anirss_lib.cli.library import _roots
+        try:
+            pin_client(cfg, argv, client)
+            print("\n".join(library.show_names(_roots(cfg)[0])))
+        except AnirssError:
+            pass
+        return
 
     # --_search-rss is special: stay quiet, no readline, no log init;
     # this fires on every keystroke pause inside the live search picker.

@@ -106,6 +106,10 @@ class DisplayConfig(TypedDict):
     force_show_seeders: bool
 
 
+class PlayerConfig(TypedDict):
+    command: str
+
+
 class ServerConfig(TypedDict):
     host: str
     port: int
@@ -121,6 +125,7 @@ class AnirssConfig(TypedDict):
     bestfit: BestfitConfig
     logging: LoggingConfig
     display: DisplayConfig
+    player: PlayerConfig
     server: ServerConfig
 
 
@@ -261,6 +266,15 @@ show_leechers = false
 # Below ~70 columns the seeders column is auto-hidden so the title still
 # fits. Set this to `true` to always render seeders regardless of width.
 force_show_seeders = false
+
+[player]
+# `anirss --play <show>` opens a show's next episode with this. Left empty,
+# anirss uses the first of mpv, vlc, celluloid, haruna, smplayer, mplayer it
+# finds, else whatever the system opens videos with. Put {file} where the
+# file goes, or leave it out to have it added at the end:
+#command = "mpv --fs"
+#command = "vlc --fullscreen {file}"
+command = ""
 
 [server]
 # `anirss --serve` exposes everything anirss does as a JSON HTTP API (see
