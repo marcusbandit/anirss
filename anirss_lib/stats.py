@@ -144,18 +144,34 @@ def _bencode_nested_end(data: bytes, pos: int) -> int:
             pos = colon + 1 + int(data[pos:colon])
 
 
+def _scrape_path(path: str) -> str | None:
+    """The scrape path for an announce path, by BEP 48: the text after the last
+    `/` has to start with `announce`, which becomes `scrape`, so `/announce` is
+    `/scrape` and `/x/announce.php` is `/x/scrape.php`. None when it does not."""
+    head, _, last = path.rpartition("/")
+    if not last.startswith("announce"):
+        return None
+    return f"{head}/scrape{last[len('announce'):]}"
+
+
 def _http_scrape(announce: str, hashes: list[bytes]) -> dict[bytes, Stats]:
-    """Scrape an http(s) tracker (announce -> scrape, BEP 48 batching)."""
+    """Scrape an http(s) tracker (announce -> scrape, BEP 48 batching).
+
+    The announce's query (a passkey, say) is kept and the info hashes go
+    after it."""
     parts = urllib.parse.urlsplit(announce)
-    path = parts.path or "/announce"
-    if parts.scheme not in ("http", "https") or not path.endswith("/announce"):
+    if parts.scheme not in ("http", "https"):
         return {}
-    scrape_url = parts._replace(path=path[:-len("announce")] + "scrape").geturl()
+    path = _scrape_path(parts.path or "/announce")
+    if path is None:
+        return {}
+    scrape_url = parts._replace(path=path, query="", fragment="").geturl()
+    keep = f"{parts.query}&" if parts.query else ""
     out: dict[bytes, Stats] = {}
     for i in range(0, len(hashes), MAX_HTTP_BATCH):
         batch = hashes[i:i + MAX_HTTP_BATCH]
         qs = "&".join(f"info_hash={urllib.parse.quote(h)}" for h in batch)
-        req = urllib.request.Request(f"{scrape_url}?{qs}",
+        req = urllib.request.Request(f"{scrape_url}?{keep}{qs}",
                                      headers={"User-Agent": _USER_AGENT})
         try:
             with urllib.request.urlopen(req, timeout=HTTP_SCRAPE_TIMEOUT) as resp:

@@ -105,6 +105,60 @@ def test_http_scrape_replaces_announce_with_scrape(monkeypatch):
     assert out[b"\x01" * 20] == (5, 1, 9)
 
 
+def _capture_urlopen(monkeypatch):
+    captured = []
+
+    def fake_urlopen(req, timeout=0):
+        captured.append(req.full_url)
+        class R:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return b"d5:filesd" + b"20:" + b"\x01" * 20 \
+                    + b"d8:completei5e10:incompletei1e10:downloadedi9eee"
+        return R()
+
+    monkeypatch.setattr(stats.urllib.request, "urlopen", fake_urlopen)
+    return captured
+
+
+def test_http_scrape_turns_announce_php_into_scrape_php_and_keeps_the_query(monkeypatch):
+    # BEP 48 only asks that the last path segment start with "announce" (#40).
+    captured = _capture_urlopen(monkeypatch)
+    out = stats._http_scrape("https://t.example/x/announce.php?passkey=abc",
+                             [b"\x01" * 20])
+    assert len(captured) == 1
+    assert captured[0].startswith(
+        "https://t.example/x/scrape.php?passkey=abc&info_hash=")
+    assert out[b"\x01" * 20] == (5, 1, 9)
+
+
+def test_http_scrape_keeps_the_query_of_a_plain_announce(monkeypatch):
+    captured = _capture_urlopen(monkeypatch)
+    stats._http_scrape("http://t.example/pk/announce?passkey=abc", [b"\x01" * 20])
+    assert captured[0].startswith("http://t.example/pk/scrape?passkey=abc&info_hash=")
+
+
+def test_scrape_path_swaps_announce_at_the_start_of_the_last_segment():
+    for announce, scrape in [
+        ("/announce", "/scrape"),
+        ("/x/announce.php", "/x/scrape.php"),
+        ("/pk/announce", "/pk/scrape"),
+        ("/announce/x", None),
+        ("/my-announce", None),
+        ("/x/announce_v2", "/x/scrape_v2"),
+    ]:
+        assert stats._scrape_path(announce) == scrape, announce
+
+
+def test_http_scrape_skips_a_tracker_with_no_scrape_convention(monkeypatch):
+    captured = _capture_urlopen(monkeypatch)
+    assert stats._http_scrape("http://t.example/announce/x", [b"\x01" * 20]) == {}
+    assert captured == []
+
+
 def test_http_scrape_skips_non_http_trackers():
     assert stats._http_scrape("udp://tracker.example:1337/announce",
                               [b"\x01" * 20]) == {}
