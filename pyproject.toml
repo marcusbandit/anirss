@@ -21,7 +21,7 @@ dependencies = []
 proctitle = ["setproctitle"]
 
 [project.scripts]
-anirss = "anirss_lib.main:main"
+anirss = "anirss_lib.entry:main"
 
 [project.urls]
 Homepage = "https://github.com/marcusbandit/anirss"

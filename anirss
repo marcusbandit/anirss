@@ -8,7 +8,6 @@ import sys
 # the launcher always finds its sibling anirss_lib/.
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
-from anirss_lib.main import main
-
 if __name__ == "__main__":
+    from anirss_lib.entry import main
     main()

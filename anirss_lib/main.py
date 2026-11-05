@@ -740,6 +740,10 @@ def main() -> None:
         _main()
     except AnirssError as e:
         die(str(e))
+    except KeyboardInterrupt:
+        # Ctrl-C is the user changing their mind, not a crash.
+        from anirss_lib.entry import die_by_sigint
+        die_by_sigint()
 
 
 def _main() -> None:
@@ -811,7 +815,8 @@ def _main() -> None:
     log("INFO", f"=== anirss invoked: argv={sys.argv[1:]} ===")
 
     parsed = parse_cli_args(argv)
-    handled, force_url = _handle_op_flag(parsed.positional, cfg, parsed)
+    handled, force_url = ((False, None) if parsed.literal_query
+                          else _handle_op_flag(parsed.positional, cfg, parsed))
     if handled:
         return
     # After the op flags: -Q, -Sy and -R only talk to qBittorrent and must

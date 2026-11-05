@@ -3,6 +3,7 @@
 Usage:
     anirss                        Prompt for a search.
     anirss [search query]         Search, refine, choose subscribe/download/movie.
+    anirss -- <query>             Search for text that looks like a flag.
     anirss <nyaa-style-url>       Extract `q=` from the URL and run as a fresh search.
     anirss <magnet|*.torrent>     Download a single torrent now.
                                   (magnet URI, remote *.torrent URL, or local *.torrent path)
@@ -94,4 +95,4 @@ State:  ~/.local/state/anirss/   (feeds.txt cache, qbt.sid session cookie, anirs
                                   is qbt-<name>.sid)
 """
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
