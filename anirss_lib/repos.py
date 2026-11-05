@@ -25,6 +25,7 @@ are AniBeam's own and are listed but not installable here. `front` and
 Silent core logic: no printing, no prompts. Raises AnirssError subclasses."""
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -283,26 +284,23 @@ def extract(d: Definition, url: str) -> dict[str, str] | None:
     by hand, say)."""
     pattern = ""
     pos = 0
-    names: list[str] = []
+    names: list[str] = []      # group g<i> holds names[i]; keys may hold '-' or '.'
     for m in _PLACEHOLDER.finditer(d.url):
         pattern += re.escape(d.url[pos:m.start()])
         key = m.group(1)
         if key == "query":
             pattern += re.escape("{query}")
         elif key in names:
-            pattern += f"(?P={key})"
+            pattern += f"(?P=g{names.index(key)})"
         else:
-            pattern += f"(?P<{key}>.*?)"
+            pattern += f"(?P<g{len(names)}>.*?)"
             names.append(key)
         pos = m.end()
     pattern += re.escape(d.url[pos:])
-    try:
-        m = re.fullmatch(pattern, url, re.DOTALL)
-    except re.error:
-        return None
+    m = re.fullmatch(pattern, url, re.DOTALL)
     if m is None:
         return None
-    return {k: urllib.parse.unquote(v) for k, v in m.groupdict().items()}
+    return {key: urllib.parse.unquote(m.group(f"g{i}")) for i, key in enumerate(names)}
 
 
 def keeps_credentials(old: Definition, new: Definition) -> bool:
@@ -587,10 +585,31 @@ def save_state(state: State, path: Path | None = None) -> None:
         raise
 
 
+@contextlib.contextmanager
+def _locked(path: Path):
+    """The state lock: a thread lock, plus a lock file other anirss processes
+    (the CLI beside a running --serve) take too. POSIX only for the file;
+    elsewhere the thread lock alone."""
+    with _state_lock:
+        try:
+            import fcntl
+        except ImportError:
+            yield
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path.with_name(path.name + ".lock"), "a") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def update_state(fn, path: Path | None = None):
     """Runs fn(state) under the state lock and saves what it leaves. Returns
     whatever fn returns."""
-    with _state_lock:
+    path = STATE_PATH if path is None else path
+    with _locked(path):
         state = load_state(path)
         out = fn(state)
         save_state(state, path)
@@ -621,6 +640,27 @@ def accept(state: State, url: str, index: Index, *, now: float | None = None) ->
                 nsfw=index.nsfw, fetched_at=now, payload=payload)
     state.repos.append(repo)
     return repo
+
+
+class Fetched(dict):
+    """URL to the bytes fetched, or the error fetching them raised."""
+
+    def get_or_raise(self, url: str) -> bytes:
+        got = self[url]
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+
+def fetch_all(urls: list[str]) -> Fetched:
+    """Each repo file, fetched with no lock held."""
+    out = Fetched()
+    for url in urls:
+        try:
+            out[url] = fetch(url)
+        except (FetchError, RepoError) as e:
+            out[url] = e
+    return out
 
 
 def refresh(state: State, *, fetcher=None, now: float | None = None) -> list[Repo]:

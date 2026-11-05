@@ -380,3 +380,71 @@ def test_the_repo_routes_preview_trust_list_and_install(ani):
         srv.shutdown()
         srv.server_close()
         t.join(timeout=2)
+
+
+# ---- review follow-ups -----------------------------------------------------
+
+PATHTOKEN = {"id": "pathtok", "name": "Path token", "version": 1, "kind": "rss",
+             "url": "https://p.example/{passkey}/rss?q={query}",
+             "auth": [{"key": "passkey", "label": "Passkey"}]}
+DASHED = {"id": "dashed", "name": "Dashed", "version": 1, "kind": "rss",
+          "url": "https://d.example/?q={query}&k={api-key}",
+          "auth": [{"key": "api-key", "label": "API key"}]}
+
+
+def test_a_secret_in_the_path_is_masked_wherever_it_is_shown(ani):
+    ani.files[ani.url] = repo_file([PATHTOKEN])
+    trust(ani)
+    ep = ani.install_endpoint("pathtok", {"passkey": "p4ss"})
+    assert "p4ss" in ep.url
+    assert ani.endpoint_view(ep)["url"] == "https://p.example/***/rss?q={query}"
+
+
+def test_a_fetch_logs_its_url_without_the_secret(monkeypatch):
+    from anirss_lib import nyaa
+    logged = []
+    monkeypatch.setattr(nyaa, "log", lambda level, msg: logged.append(msg))
+
+    def refuse(*a, **kw):
+        raise OSError("no network in tests")
+    monkeypatch.setattr(nyaa.urllib.request, "urlopen", refuse)
+    with pytest.raises(FetchError):
+        nyaa.fetch_bytes("https://t.example/feed?q=x&apikey=SECRET")
+    assert logged and all("SECRET" not in m for m in logged)
+
+
+def test_values_read_back_for_keys_with_a_dash():
+    d = repos.definition_from(DASHED)
+    url = repos.fill(d, {"api-key": "k1"})
+    assert repos.extract(d, url) == {"api-key": "k1"}
+
+
+def test_replacing_an_installed_endpoint_by_hand_forgets_where_it_came_from(ani):
+    trust(ani)
+    ani.install_endpoint("plain")
+    ani.add_endpoint({"name": "plain", "kind": "rss", "url": "https://mine.example/?q={query}"})
+    assert "plain" not in ani.installed_endpoints()
+
+
+def test_a_nyaa_address_with_its_own_parameters_keeps_them():
+    from anirss_lib import endpoints
+    ep = endpoints.Endpoint("n", "nyaa", "https://n.example/?token=abc")
+    assert endpoints.search_url(ep, "x").startswith("https://n.example/?token=abc&page=rss&q=x")
+
+
+def test_search_words_are_never_found_in_the_host():
+    from anirss_lib.endpoint_config import put_query
+    assert put_query("https://subs.example/rss/?s=sub", "sub") == \
+        "https://subs.example/rss/?s={query}"
+    with pytest.raises(ValidationError):
+        put_query("https://frieren.example/", "frieren")
+
+
+def test_the_api_never_reads_a_local_repo_file(ani, tmp_path):
+    f = tmp_path / "local.json"
+    ani.files[str(f)] = repo_file([PLAIN])
+    assert ani.preview_repo(str(f)).name == "Test repo"     # the CLI may
+    with pytest.raises(ValidationError):
+        ani.preview_repo(str(f), allow_local=False)
+    with pytest.raises(ValidationError):
+        ani.trust_repo(f.as_uri(), key_text(), allow_local=False)

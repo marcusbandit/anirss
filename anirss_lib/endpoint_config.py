@@ -114,7 +114,8 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def _write(path: Path, new_text: str, expected: list[dict]) -> None:
+def _write(path: Path, new_text: str, expected: list[dict], *,
+           private: bool = False) -> None:
     got = _endpoints_of(new_text)
     if [{k: e.get(k) for k in WRITABLE_KEYS} for e in got] != \
             [{k: e.get(k) for k in WRITABLE_KEYS} for e in expected]:
@@ -132,6 +133,9 @@ def _write(path: Path, new_text: str, expected: list[dict]) -> None:
             f.write(new_text)
         if target.exists():
             shutil.copymode(target, tmp)
+        if private and os.name == "posix":
+            # Before the replace, so the credential is never world-readable.
+            os.chmod(tmp, 0o600)
         os.replace(tmp, target)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
@@ -176,13 +180,16 @@ def _load(path: Path, implicit: list[dict] | None
     return lines, current, blocks
 
 
-def add_endpoint(path: Path, spec: dict, implicit: list[dict] | None = None) -> bool:
+def add_endpoint(path: Path, spec: dict, implicit: list[dict] | None = None, *,
+                 private: bool = False) -> bool:
     """Writes `spec` (already through check_spec) into the file at `path`.
     An endpoint with the same name is replaced in place, comments inside its
     block included; a new one goes after the last [[endpoint]] block, or at
     the end of the file when there is none. One with keys the API cannot
     write (an on-demand endpoint's commands, its own paths) is refused rather
-    than stripped. True when it replaced one."""
+    than stripped. `private` (the endpoint holds a credential) makes the
+    file readable by this user only, from the moment it lands. True when it
+    replaced one."""
     lines, current, blocks = _load(path, implicit)
     found = [_block(lines, b) for b in blocks]
     names = [b.get("name") for b in found]
@@ -208,7 +215,7 @@ def add_endpoint(path: Path, spec: dict, implicit: list[dict] | None = None) -> 
             lines.extend(block)
         expected = [*current, spec]
         replaced = False
-    _write(path, "".join(lines), expected)
+    _write(path, "".join(lines), expected, private=private)
     return replaced
 
 
@@ -282,8 +289,12 @@ def put_query(url: str, words: str) -> str:
         raise ValidationError("type the words you searched for")
     forms = [words, urllib.parse.quote_plus(words), urllib.parse.quote(words),
              words.replace(" ", "+"), words.replace(" ", "%20")]
+    # Only after the host: the words never stand for part of the site's name.
+    scheme_end = url.find("://") + 3 if "://" in url else 0
+    tail = re.search(r"[/?#]", url[scheme_end:])
+    start = scheme_end + tail.start() if tail else len(url)
     for form in forms:
-        at = url.lower().find(form.lower())
+        at = url.lower().find(form.lower(), start)
         if at >= 0:
             return url[:at] + "{query}" + url[at + len(form):]
     raise ValidationError(f"{words!r} is not in that address")

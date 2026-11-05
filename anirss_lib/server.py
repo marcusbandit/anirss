@@ -26,7 +26,6 @@ from anirss_lib.ansi import C_BLD, C_DIM, C_GRN, C_OFF
 from anirss_lib.api import (
     Anirss,
     client_info,
-    endpoint_info,
     index_info,
     item_from_dict,
     offer_info,
@@ -385,11 +384,12 @@ class Handler(BaseHTTPRequestHandler):
         return 200, {"clients": [client_info(c) for c in self.ani.clients()]}
 
     def h_endpoints(self, q, _):
-        return 200, {"endpoints": [endpoint_info(ep) for ep in self.ani.endpoints()]}
+        return 200, {"endpoints": [self.ani.endpoint_view(ep)
+                                   for ep in self.ani.endpoints()]}
 
     def h_endpoint_add(self, q, _):
         ep, replaced = self.ani.add_endpoint(self._json_body())
-        return (200 if replaced else 201), {"endpoint": endpoint_info(ep),
+        return (200 if replaced else 201), {"endpoint": self.ani.endpoint_view(ep),
                                             "replaced": replaced}
 
     def h_endpoint_remove(self, q, name):
@@ -402,12 +402,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def h_repo_preview(self, q, _):
         url = _str(self._json_body(), "url", required=True) or ""
-        return 200, {"repo": index_info(url, self.ani.preview_repo(url))}
+        return 200, {"repo": index_info(url, self.ani.preview_repo(url, allow_local=False))}
 
     def h_repo_trust(self, q, _):
         b = self._json_body()
         repo = self.ani.trust_repo(_str(b, "url", required=True) or "",
-                                   _str(b, "key", required=True) or "")
+                                   _str(b, "key", required=True) or "",
+                                   allow_local=False)
         return 201, {"repo": repo_info(repo)}
 
     def h_repo_remove(self, q, _):
@@ -422,13 +423,13 @@ class Handler(BaseHTTPRequestHandler):
         ep = self.ani.install_endpoint(_str(b, "id", required=True) or "",
                                        _credentials(b), repo=_str(b, "repo"),
                                        name=_str(b, "name"))
-        return 201, {"endpoint": endpoint_info(ep)}
+        return 201, {"endpoint": self.ani.endpoint_view(ep)}
 
     def h_repo_update(self, q, _):
         b = self._json_body()
         creds = _credentials(b) if b.get("credentials") is not None else None
         ep = self.ani.update_endpoint(_str(b, "name", required=True) or "", creds)
-        return 200, {"endpoint": endpoint_info(ep)}
+        return 200, {"endpoint": self.ani.endpoint_view(ep)}
 
     def h_search_get(self, q, _):
         res = self.ani.search(q.get("q", ""), q.get("endpoint") or None,

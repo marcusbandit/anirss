@@ -207,7 +207,7 @@ the trust rules):
 
 | Method | Returns | Notes |
 | --- | --- | --- |
-| `preview_repo(url)` | `repos.Index` | Fetches and verifies a repo without trusting it. Show the user `name`, the URL and `fingerprint`, then call `trust_repo`. `url` may also be a local path. `RepoError` when the file is not a repo or its signature fails, `FetchError` when it can't be fetched. |
+| `preview_repo(url, *, allow_local=True)` | `repos.Index` | Fetches and verifies a repo without trusting it. Show the user `name`, the URL and `fingerprint`, then call `trust_repo`. `url` may also be a local path unless `allow_local` is off (the HTTP API turns it off: only http(s) there). `RepoError` when the file is not a repo or its signature fails, `FetchError` when it can't be fetched. |
 | `trust_repo(url, key, *, index=None)` | `repos.Repo` | Pins `key` (the one from the preview the user saw) and saves the index. Fetches again unless `index` is that preview. Another key raises `RepoError` with `code` `key_changed`. |
 | `repos(*, refresh=False)` | `list[repos.Repo]` | The trusted repos. `refresh` fetches each again; one that fails keeps its last good index and carries `error`. |
 | `remove_repo(ref)` | `repos.Repo` | By URL or name. Endpoints installed from it stay. |
@@ -268,9 +268,11 @@ Helpers also exported from `anirss_lib.api`:
 - `to_jsonable(obj)`: results to JSON-ready builtins.
 - `item_from_dict(d)`: rebuild an `Item` from its JSON form (unknown keys
   ignored, `null` fields take their default).
-- `endpoint_info(ep)`: display-safe dict for an `Endpoint`: `name`, `kind`,
-  `url` (redacted), `client_side_refine`. This is what `GET /endpoints` returns
-  per endpoint. Note that `Anirss.endpoints()` returns the full `Endpoint`
+- `endpoint_info(ep, secrets=())`: display-safe dict for an `Endpoint`:
+  `name`, `kind`, `url` (redacted, plus each value in `secrets` masked wherever
+  it sits), `client_side_refine`. `Anirss.endpoint_view(ep)` passes the secret
+  values an endpoint installed from a repo was given, so a token in its path is
+  masked too; that is what `GET /endpoints` returns per endpoint. Note that `Anirss.endpoints()` returns the full `Endpoint`
   with its real URL, including any token.
 - `client_info(client)`: display-safe dict for one of `Anirss.clients()`:
   `name` and `url` (credentials in the URL masked). This is what `GET /clients`

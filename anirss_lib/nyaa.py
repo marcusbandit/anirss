@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 
 from anirss_lib.errors import FetchError
 from anirss_lib.logging import log
+from anirss_lib.redact import redact_url
 from anirss_lib.types import Item
 
 
@@ -194,7 +195,7 @@ def fetch_rss(url: str, endpoint_name: str = "feed",
 def fetch_bytes(url: str, endpoint_name: str = "feed",
                 timeout: float = 10.0) -> bytes:
     """GET `url` the way a feed is fetched. Raises FetchError on failure."""
-    log("INFO", f"GET {url}")
+    log("INFO", f"GET {redact_url(url)}")
     # erai-raws (Cloudflare) 502s non-browser User-Agents like the old
     # "anirss/1.0", so present as a stock Firefox.
     req = urllib.request.Request(url, headers={

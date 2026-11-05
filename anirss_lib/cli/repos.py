@@ -345,7 +345,6 @@ def cmd_update(ani, opts: _Opts) -> None:
 # ---- the endpoint list -------------------------------------------------------
 
 def cmd_endpoints(ani, opts: _Opts) -> None:
-    from anirss_lib.api import redact_url
     eps = ani.endpoints()
     if not eps:
         print("No search endpoints yet.")
@@ -372,7 +371,7 @@ def cmd_endpoints(ani, opts: _Opts) -> None:
         if ep.on_demand:
             where += ", on-demand"
         print(f"  {i:>2}  {C_BLD}{ep.name:<{nw}}{C_OFF}  {ep.kind:<4}  "
-              f"{redact_url(ep.url)}  {C_DIM}{where}{C_OFF}")
+              f"{ani.endpoint_view(ep)['url']}  {C_DIM}{where}{C_OFF}")
 
 
 def cmd_add_endpoint(ani, opts: _Opts) -> None:

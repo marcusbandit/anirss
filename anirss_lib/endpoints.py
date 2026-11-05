@@ -146,7 +146,8 @@ def search_url(ep: Endpoint, query: str) -> str:
         qs = urllib.parse.urlencode({
             "page": "rss", "q": query, "c": ep.category, "f": ep.filter,
         })
-        return f"{ep.url}?{qs}"
+        # A nyaa address may carry fixed parameters of its own (a token).
+        return f"{ep.url}{'&' if '?' in ep.url else '?'}{qs}"
     return ep.url.replace("{query}", urllib.parse.quote_plus(query))
 
 
