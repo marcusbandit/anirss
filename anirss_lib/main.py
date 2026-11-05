@@ -37,7 +37,13 @@ from anirss_lib.nyaa import FetchError, fetch_rss
 from anirss_lib.qbt.actions import (
     ask_rss_on, do_download, do_movie, do_subscribe, do_upload_local_torrent,
 )
-from anirss_lib.qbt.clients import download_root, local_files, qbt_client, qbt_clients
+from anirss_lib.qbt.clients import (
+    download_root,
+    local_files,
+    own_bases,
+    qbt_client,
+    qbt_clients,
+)
 from anirss_lib.qbt.feeds import maybe_refresh_feed_cache
 from anirss_lib.qbt.refresh import cmd_refresh_on_demand, settle
 from anirss_lib.qbt.session import apply_no_seed, login_with_password, login_with_retry
@@ -276,9 +282,7 @@ def _handle_op_flag(argv: list[str], cfg: AnirssConfig, parsed: ParsedArgs
     rest = argv[1:]
     if op == "Q":
         client = cfg["qbittorrent"]
-        cmd_query(client, json_format=("j" in mods),
-                  own_bases=[download_root(cfg, client, "save_base"),
-                             download_root(cfg, client, "hidden_base")])
+        cmd_query(client, json_format=("j" in mods), own_bases=own_bases(cfg, client))
         return True, None
     if op == "S" and "y" in mods:
         cmd_sync(cfg["qbittorrent"])
@@ -302,8 +306,7 @@ def _handle_op_flag(argv: list[str], cfg: AnirssConfig, parsed: ParsedArgs
                    noconfirm=parsed.noconfirm,
                    save_base=save_base,
                    local_files=local_files(client),
-                   own_bases=[download_root(cfg, client, "save_base"),
-                              download_root(cfg, client, "hidden_base")])
+                   own_bases=own_bases(cfg, client))
         return True, None
     if op == "T":
         if not rest:

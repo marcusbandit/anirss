@@ -46,6 +46,19 @@ def download_root(cfg: AnirssConfig, client: QbtConfig, key: str) -> str:
     return str(client.get(key) or cfg["downloads"][key])
 
 
+def own_bases(cfg: AnirssConfig, client: QbtConfig) -> list[str]:
+    """Every root anirss makes a rule's own `<base>/<name>` folder under: the
+    client's (else [downloads]'s) save_base and hidden_base, and, when the
+    client sets no save_base of its own, each endpoint's save_base."""
+    bases = [download_root(cfg, client, "save_base"),
+             download_root(cfg, client, "hidden_base")]
+    if not client.get("save_base"):
+        bases += [os.path.expanduser(str(e["save_base"]))
+                  for e in cfg.get("endpoint") or []
+                  if isinstance(e, dict) and e.get("save_base")]
+    return bases
+
+
 def _settle_paths(client: QbtConfig, label: str) -> None:
     """Check a client's local_files and own download roots. A local client's
     `~` is expanded here; another's is refused, since nothing on that

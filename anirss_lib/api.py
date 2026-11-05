@@ -59,7 +59,7 @@ from anirss_lib.qbt.actions import (
     SubscribeResult,
     validate_name,
 )
-from anirss_lib.qbt.clients import download_root, local_files, qbt_clients
+from anirss_lib.qbt.clients import download_root, local_files, own_bases, qbt_clients
 from anirss_lib.qbt.session import QbtSession, _qbt_reachable, login_with_password
 from anirss_lib.redact import redact_url
 from anirss_lib.refinement import RefineOutcome
@@ -844,16 +844,10 @@ class Anirss:
 
     # ---- subscriptions / torrents --------------------------------------------
 
-    def _own_bases(self, client: str | None = None) -> list[str]:
-        """The roots anirss makes a rule's own `<base>/<name>` folder under."""
-        c = self.client(client)
-        return [download_root(self.config, c, "save_base"),
-                download_root(self.config, c, "hidden_base")]
-
     def subscriptions(self, *, client: str | None = None) -> list[RuleInfo]:
         """Every qB RSS rule with torrent/file counts (`anirss -Qj`). A rule
         saving into a folder it shares counts only its own torrents (#38)."""
-        bases = self._own_bases(client)
+        bases = own_bases(self.config, self.client(client))
         return self._with_qbt(lambda q: actions.list_subscriptions(q, bases), client)
 
     def remove(self, names: list[str], *, drop_torrents: bool = False,
@@ -866,14 +860,17 @@ class Anirss:
         names = list(dict.fromkeys(names))  # a repeat would fail half-way through
         if not names:
             raise ValidationError("no subscription names given")
-        here = local_files(self.client(client))
-        roots = self._own_bases(client)
+        c = self.client(client)
+        here = local_files(c)
+        roots = [download_root(self.config, c, "save_base"),
+                 download_root(self.config, c, "hidden_base")]
+        bases = own_bases(self.config, c)
 
         def run(q: QbtSession) -> list[RemovePlan]:
             plans = actions.plan_remove(q, names, drop_torrents=drop_torrents,
                                         drop_files=drop_files,
                                         save_base=self._save_base(hidden, client),
-                                        local_files=here, own_bases=roots)
+                                        local_files=here, own_bases=bases)
             if drop_files:
                 # dry runs refuse too
                 actions.check_confined(plans, roots, local_files=here)
@@ -893,8 +890,7 @@ class Anirss:
         if name:
             name = validate_name(name)
             base = self._save_base(hidden, client)
-            bases = self._own_bases(client)
-            return self._with_qbt(lambda q: [
-                t for t in actions.name_torrents(q, name, base, bases)
-                if not hashes or t.get("hash") in hashes], client)
+            bases = own_bases(self.config, self.client(client))
+            return self._with_qbt(lambda q: actions.name_torrents(
+                q, name, base, bases, hashes=hashes), client)
         return self._with_qbt(lambda q: actions.list_torrents(q, hashes=hashes), client)

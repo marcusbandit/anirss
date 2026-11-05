@@ -1865,6 +1865,68 @@ def test_a_rule_whose_folder_is_only_in_torrent_params_is_read_there(make, tmp_p
     assert [t["hash"] for t in e.ani.torrents(name="Show")] == ["mine"]
 
 
+def test_a_rule_owning_its_folder_leaves_another_rules_torrents_there(make, tmp_path):
+    # `Show @other` saves into the folder anirss made for `Show`.
+    d = _populated(tmp_path / "anime" / "Show")
+    (d / "ep2.mkv").write_text("678")
+    qbt = FakeQbt(
+        rules={"Show": {"affectedFeeds": ["http://feed"], "savePath": str(d)},
+               "Show @other": {"affectedFeeds": ["http://other"], "savePath": str(d)}},
+        feed_tree={"Show": {"uid": "u", "url": "http://feed"}},
+        torrents=[{"hash": "mine", "save_path": str(d), "size": 5, "tags": "Anime",
+                   "content_path": str(d / "ep1.mkv")},
+                  {"hash": "theirs", "save_path": str(d), "size": 3,
+                   "content_path": str(d / "ep2.mkv"),
+                   "tags": actions.rule_tag("Show @other")}])
+    e = make(qbt)
+    infos = {i.name: i for i in e.ani.subscriptions()}
+    assert (infos["Show"].torrent_count, infos["Show"].file_count) == (1, 1)
+    [plan] = e.ani.remove(["Show"], drop_files=True)
+    assert plan.owns_folder is False and plan.size_bytes == 5
+    assert not (d / "ep1.mkv").exists() and (d / "ep2.mkv").exists()
+    e.qbt.posts.clear()
+    e.ani.remove(["Show"], drop_torrents=True, drop_files=True)
+    [fields] = e.qbt.posts_to("/api/v2/torrents/delete")
+    assert fields == {"hashes": "mine", "deleteFiles": "true"}
+
+
+def test_an_endpoints_save_base_holds_rules_own_folders(make, tmp_path):
+    ep_base = tmp_path / "ep-anime"
+    d = _populated(ep_base / "Show")
+    e = make(FakeQbt(rules={"Show": {"affectedFeeds": [], "savePath": str(d)}},
+                     torrents=[{"hash": "old", "save_path": str(d), "tags": "Anime"}]),
+             config={"endpoint": [{**NYAA_EP, "save_base": str(ep_base)}, RSS1_EP]})
+    [info] = e.ani.subscriptions()
+    assert (info.torrent_count, info.file_count) == (1, 1)
+    [plan] = e.ani.remove(["Show"], drop_torrents=True, dry_run=True)
+    assert plan.owns_folder and [t["hash"] for t in plan.torrents] == ["old"]
+
+
+def test_rule_tags_keep_names_with_commas_apart():
+    assert actions.rule_tag("A,B") != actions.rule_tag("A B")
+    assert actions.rule_tag("A%2CB") != actions.rule_tag("A,B")
+    assert "," not in actions.rule_tag("A,B")
+
+
+def test_a_torrent_with_no_folder_of_its_own_counts_no_shared_files(make, tmp_path):
+    e, show = _shared_env(make, tmp_path)
+    e.qbt.torrents[0]["content_path"] = str(show)       # a NoSubfolder layout
+    infos = {i.name: i for i in e.ani.subscriptions()}
+    assert (infos["Show"].torrent_count, infos["Show"].file_count) == (1, 0)
+    e.ani.remove(["Show"], drop_files=True)
+    assert sorted(p.name for p in show.iterdir()) == ["ep1.mkv", "ep2.mkv"]
+
+
+def test_removing_a_rules_torrents_removes_its_tag(make, tmp_path):
+    e, _ = _shared_env(make, tmp_path)
+    e.ani.remove(["Show"], drop_torrents=True)
+    assert e.qbt.posts_to("/api/v2/torrents/deleteTags") == [
+        {"tags": actions.rule_tag("Show")}]
+    e.qbt.posts.clear()
+    e.ani.remove(["Show @other"])
+    assert e.qbt.posts_to("/api/v2/torrents/deleteTags") == []
+
+
 # -------------------------------------------------------- serialization
 
 

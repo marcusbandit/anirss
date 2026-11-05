@@ -884,7 +884,8 @@ curl -H "Authorization: Bearer $TOKEN" $BASE/subscriptions
 `torrent_count` is how many qBittorrent torrents are the subscription's, and
 `file_count` how many files on disk they hold, `0` when qBittorrent runs on
 another host. In its own folder, `<save_base>/<name>` or `<hidden_base>/<name>`,
-that is everything under `save_path`. A rule saving anywhere else, a show's own
+or under an endpoint's own `save_base`, that is everything under `save_path` but
+a torrent tagged for another rule. A rule saving anywhere else, a show's own
 folder, shares it with episodes it never downloaded and with other rules, so
 only the torrents carrying its tag `anirss:<name>` count, and their files.
 
@@ -986,12 +987,12 @@ curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 
 `torrents` in a plan is populated only when `torrents` or `files` was
 requested. `owns_folder` says whether `save_path` is anirss's own folder for the
-rule. When it is, every torrent in it is the rule's and `files` deletes the
-folder. When it is not, a show's folder say, only the torrents tagged
+rule and holds no other rule's torrent. When it is, every torrent in it is the
+rule's and `files` deletes the folder. When it is not, a show's folder say, only the torrents tagged
 `anirss:<name>` are the rule's: `torrents` removes those alone, `files` deletes
 only their files, and the folder and everything else in it stay. A rule made
 before anirss tagged its torrents has none it can tell apart there, so nothing
-in the folder is touched. `feed_path` is `null` if the rule has no feed or the feed was not found.
+in the folder is touched. Removing a rule with `torrents` also deletes its tag. `feed_path` is `null` if the rule has no feed or the feed was not found.
 `size_bytes` is the size of the affected content. Always do a `dry_run` first
 when exposing `files` to end users.
 

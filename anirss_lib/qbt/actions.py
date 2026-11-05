@@ -121,9 +121,10 @@ RULE_TAG_PREFIX = "anirss:"
 
 def rule_tag(name: str) -> str:
     """The tag every torrent a rule adds carries, so the ones it added can be told
-    apart in a folder other torrents share: a show's own folder (#38). A comma
-    would split it in two, so none is kept."""
-    return RULE_TAG_PREFIX + name.replace(",", " ").strip()
+    apart in a folder other torrents share: a show's own folder (#38). qBittorrent
+    splits tags at commas, so a comma is written `%2C` (and `%` as `%25`), which
+    keeps every rule name's tag its own."""
+    return RULE_TAG_PREFIX + name.replace("%", "%25").replace(",", "%2C")
 
 
 def rule_save_path(rule: dict) -> str:
@@ -149,37 +150,52 @@ def _torrent_tags(t: dict) -> set[str]:
     return {str(p).strip() for p in pieces if str(p).strip()}
 
 
-def _rule_torrents(info, save_path: str, name: str, owned: bool) -> list[dict]:
-    """The torrents in qB's list `info` that are the rule's: every one under
-    its own folder, or in a shared folder only those carrying its tag."""
+def _in_folder(info, save_path: str) -> list[dict]:
     if not isinstance(info, list):
         return []
     norm = _norm_path(save_path)
-    tag = rule_tag(name)
     return [t for t in info if isinstance(t, dict)
-            and _norm_path(t.get("save_path", "")) == norm
-            and (owned or tag in _torrent_tags(t))]
+            and _norm_path(t.get("save_path", "")) == norm]
 
 
-def _torrents_for_savepath(qbt: QbtSession, save_path: str, name: str,
-                           owned: bool) -> list[dict]:
-    return _rule_torrents(qbt.get_json("/api/v2/torrents/info"), save_path, name, owned)
+def _others_tag(t: dict, name: str) -> bool:
+    """Whether `t` carries another rule's tag, so it is that rule's."""
+    mine = rule_tag(name)
+    return any(tag.startswith(RULE_TAG_PREFIX) and tag != mine
+               for tag in _torrent_tags(t))
 
 
-def _inside(path: str, folder: str) -> bool:
-    """Whether `path` lies strictly inside `folder`, links resolved."""
-    real, root = os.path.realpath(path), os.path.realpath(folder)
-    return real != root and real.startswith(root.rstrip(os.sep) + os.sep)
+def _rule_torrents(info, save_path: str, name: str, owned: bool
+                   ) -> tuple[list[dict], bool]:
+    """The torrents in qB's list `info` that are the rule's, and whether the
+    folder is the rule's alone. In its own folder that is every torrent but
+    one tagged for another rule; in a shared folder only those carrying its
+    tag. Its own folder holding another rule's torrent is shared too, so it
+    is never deleted whole."""
+    here = _in_folder(info, save_path)
+    foreign = any(_others_tag(t, name) for t in here)
+    if owned:
+        return [t for t in here if not _others_tag(t, name)], not foreign
+    tag = rule_tag(name)
+    return [t for t in here if tag in _torrent_tags(t)], False
 
 
-def _content_file_count(torrents: list[dict]) -> int:
-    """Files on disk under the torrents' content paths (0 for paths not here)."""
+def _contained(torrents: list[dict], folder: str) -> list[str]:
+    """The torrents' content paths that lie strictly inside `folder`: a file
+    or a torrent's own subfolder, never the folder itself (a torrent with no
+    root folder) nor anywhere outside it."""
+    return [c for c in (t.get("content_path") or "" for t in torrents)
+            if c and _is_inside(c, [folder])]
+
+
+def _content_file_count(torrents: list[dict], folder: str) -> int:
+    """Files on disk under the torrents' content paths inside `folder` (0 for
+    paths not on this machine)."""
     total = 0
-    for t in torrents:
-        path = t.get("content_path") or ""
-        if path and os.path.isfile(path):
+    for path in _contained(torrents, folder):
+        if os.path.isfile(path):
             total += 1
-        elif path:
+        else:
             total += _dir_file_count(path)
     return total
 
@@ -564,15 +580,15 @@ def list_subscriptions(qbt: QbtSession, own_bases: list[str] | None = None
         feeds = rule.get("affectedFeeds") or []
         save_path = rule_save_path(rule)
         owned = own_bases is None or owns_folder(save_path, name, own_bases)
-        mine = _rule_torrents(info, save_path, name, owned)
+        mine, alone = _rule_torrents(info, save_path, name, owned)
         out.append(RuleInfo(
             name=name,
             feed_url=feeds[0] if feeds else "",
             save_path=save_path,
             rule_enabled=bool(rule.get("enabled", True)),
             torrent_count=len(mine),
-            file_count=(_dir_file_count(save_path) if owned
-                        else _content_file_count(mine)),
+            file_count=(_dir_file_count(save_path) if alone
+                        else _content_file_count(mine, save_path)),
         ))
     return out
 
@@ -628,8 +644,10 @@ def plan_remove(qbt: QbtSession, names: list[str], *, drop_torrents: bool,
         owned = owns_folder(save_path, name,
                             own_bases if own_bases is not None else [save_base])
         feed_path = _find_feed_path(qbt, feed_url) if feed_url else None
-        torrents = (_torrents_for_savepath(qbt, save_path, name, owned)
-                    if (drop_torrents or drop_files) else [])
+        torrents: list[dict] = []
+        if drop_torrents or drop_files:
+            torrents, owned = _rule_torrents(qbt.get_json("/api/v2/torrents/info"),
+                                             save_path, name, owned)
         if not drop_files:
             size_bytes = 0
         elif local_files and owned:
@@ -685,6 +703,9 @@ def execute_remove(qbt: QbtSession, plans: list[RemovePlan], *,
             qbt.post("/api/v2/torrents/delete", hashes=hashes,
                      deleteFiles=("true" if drop_files else "false"))
             notify(f"removed {len(p.torrents)} torrent(s) for {p.name}")
+        if drop_torrents:
+            # The rule is going and so are its torrents: its tag goes too.
+            qbt.post("/api/v2/torrents/deleteTags", tags=rule_tag(p.name))
         if p.feed_path:
             qbt.post("/api/v2/rss/removeItem", path=p.feed_path)
             notify(f"removed feed {p.name}")
@@ -701,13 +722,15 @@ def execute_remove(qbt: QbtSession, plans: list[RemovePlan], *,
             _safe_rmtree(p.save_path)
             notify(f"deleted files at {p.save_path}")
         elif not p.owns_folder:
-            gone = [c for c in (t.get("content_path") or "" for t in p.torrents)
-                    if c and os.path.lexists(c) and _inside(c, p.save_path)]
+            gone = [c for c in _contained(p.torrents, p.save_path) if os.path.lexists(c)]
             for c in gone:
                 if os.path.isdir(c) and not os.path.islink(c):
                     _safe_rmtree(c)
-                else:
+                    continue
+                try:
                     os.remove(c)
+                except OSError as e:
+                    raise AnirssError(f"remove {c}: {e}") from e
             if gone:
                 notify(f"deleted {len(gone)} file(s) of {p.name} in {p.save_path}")
 
@@ -719,12 +742,10 @@ TORRENT_FIELDS = ("hash", "name", "state", "progress", "size", "dlspeed",
 
 
 def list_torrents(qbt: QbtSession, *, save_path: str | None = None,
-                  hashes: list[str] | None = None,
-                  tag: str | None = None) -> list[dict]:
+                  hashes: list[str] | None = None) -> list[dict]:
     """qB's torrent list trimmed to TORRENT_FIELDS, optionally narrowed to
-    one save path (a subscription's folder), a tag (a rule's, in a folder it
-    shares) or a set of info-hashes. Paths are as qBittorrent sees them (its
-    host, not necessarily this one)."""
+    one save path (a download's folder) or a set of info-hashes. Paths are
+    as qBittorrent sees them (its host, not necessarily this one)."""
     params = {"hashes": "|".join(hashes)} if hashes else {}
     info = qbt.get_json("/api/v2/torrents/info", **params)
     if not isinstance(info, list):
@@ -732,20 +753,23 @@ def list_torrents(qbt: QbtSession, *, save_path: str | None = None,
     norm = _norm_path(save_path) if save_path else None
     return [{k: t.get(k) for k in TORRENT_FIELDS} for t in info
             if isinstance(t, dict)
-            and (norm is None or _norm_path(t.get("save_path", "")) == norm)
-            and (tag is None or tag in _torrent_tags(t))]
+            and (norm is None or _norm_path(t.get("save_path", "")) == norm)]
 
 
 def name_torrents(qbt: QbtSession, name: str, save_base: str,
-                  own_bases: list[str]) -> list[dict]:
-    """The torrents of one subscription or download `name`: a rule of that
-    name's, in the folder it saves into, only those carrying its tag when
-    that folder is shared (#38); else what sits in `<save_base>/<name>`."""
+                  own_bases: list[str], hashes: list[str] | None = None) -> list[dict]:
+    """The torrents of one subscription or download `name`, optionally only
+    those of `hashes`: a rule of that name's, in the folder it saves into,
+    found the way removal finds them (#38); else what sits in
+    `<save_base>/<name>`."""
     rules = qbt.get_json("/api/v2/rss/rules") or {}
     rule = rules.get(name) if isinstance(rules, dict) else None
     save_path = rule_save_path(rule) if isinstance(rule, dict) else ""
     if not save_path:
-        return list_torrents(qbt, save_path=join_save_path(save_base, name))
-    owned = owns_folder(save_path, name, own_bases)
-    return list_torrents(qbt, save_path=save_path,
-                         tag=None if owned else rule_tag(name))
+        return list_torrents(qbt, save_path=join_save_path(save_base, name),
+                             hashes=hashes)
+    params = {"hashes": "|".join(hashes)} if hashes else {}
+    mine, _alone = _rule_torrents(qbt.get_json("/api/v2/torrents/info", **params),
+                                  save_path, name,
+                                  owns_folder(save_path, name, own_bases))
+    return [{k: t.get(k) for k in TORRENT_FIELDS} for t in mine]
