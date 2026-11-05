@@ -38,14 +38,11 @@ jobs:
         run: uv run --python ${{ matrix.python }} --with pytest pytest -q tests test_anirss.py
       - name: Launcher runs
         run: uv run --python ${{ matrix.python }} python anirss --version
-
-  lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - name: Completions parse
-        run: |
-          sudo apt-get install -y -q zsh >/dev/null
-          zsh -n completions/_anirss
-          bash -n completions/anirss.bash
+      # zsh ships on macOS runners and bash on Linux ones, so neither needs an
+      # install step (apt on the runners can stall for minutes).
+      - name: zsh completion parses
+        if: runner.os == 'macOS'
+        run: zsh -n completions/_anirss
+      - name: bash completion parses
+        if: runner.os == 'Linux'
+        run: bash -n completions/anirss.bash
