@@ -229,6 +229,11 @@ def _handle_meta_flags(argv: list[str], cfg: AnirssConfig) -> bool:
     if a == "--migrate-config":
         migrate_config()
         return True
+    if a in ("--play", "--status"):
+        from anirss_lib.cli import library as library_cli
+        init_log(cfg["logging"]["log_path"])
+        (library_cli.cmd_play if a == "--play" else library_cli.cmd_status)(cfg, argv[1:])
+        return True
     if a == "--setup":
         from anirss_lib.cli.setup import cmd_setup
         cmd_setup(cfg)
@@ -711,6 +716,11 @@ def _print_completion_words(flag: str, cfg: AnirssConfig) -> None:
             state = repos_mod.load_state()
             words = [o.definition.id for o in repos_mod.catalog(state)
                      if o.definition.searchable and not o.installed_as]
+        elif flag == "--_shows":
+            from anirss_lib import library
+            from anirss_lib.qbt.clients import download_root, qbt_client
+            client = qbt_client(cfg)
+            words = [s.name for s in library.shows(download_root(cfg, client, "save_base"))]
         else:
             words = [r.name for r in repos_mod.load_state().repos]
     except AnirssError:
@@ -746,7 +756,7 @@ def _main() -> None:
         return
     # Hidden, for the completions too: endpoint names, the ids --install can
     # take, and the trusted repos.
-    if sys.argv[1:2] in (["--_endpoints"], ["--_offers"], ["--_repos"]):
+    if sys.argv[1:2] in (["--_endpoints"], ["--_offers"], ["--_repos"], ["--_shows"]):
         _print_completion_words(sys.argv[1], cfg)
         return
 

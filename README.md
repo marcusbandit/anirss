@@ -161,6 +161,27 @@ tags = ["TV"]
 
 `[search]` (the old single-endpoint config block) is now the deprecated legacy fallback: it only applies when no `[[endpoint]]` is defined at all. Existing configs that only have `[search]` keep working exactly as before.
 
+## Watching, in your own player
+
+anirss only finds and fetches; any player works. Each show lands in its own folder (`~/Downloads/Anime/<show>/`), so mpv, VLC, Jellyfin, Plex or Kodi can read it straight away. Two commands help when you watch from the terminal:
+
+```sh
+anirss --status              # what is downloading now, what finished this week
+anirss --play frieren        # the next episode: the one after the last one you played
+anirss --play                # pick a show
+anirss --play frieren --pick # pick the episode (✓ played, ▶ next)
+```
+
+`--play` sorts episodes by their number (`- 05`, `S02E05`, `Ep 5`), never plays a file qBittorrent is still writing, and remembers what it opened in `~/.local/state/anirss/played.json`. It uses `[player] command` when set, else the first of mpv, VLC, Celluloid, Haruna, SMPlayer or MPlayer it finds, else whatever the system opens videos with (IINA on macOS when installed):
+
+```toml
+[player]
+command = "mpv --fs"                     # the file goes at the end
+#command = "vlc --fullscreen {file}"     # or wherever {file} is
+```
+
+It plays from this machine's disk, so it works with a local qBittorrent, or a remote one whose folder is mounted here (`local_files = true` on its `[[qbittorrent.client]]` block).
+
 ## Tags
 
 Everything anirss hands to qBittorrent is tagged `Anime`: one-off downloads, uploaded `.torrent` files, movies, and the RSS auto-download rules it creates, so a subscription keeps tagging every new episode it grabs. Change or extend the list in `~/.config/anirss/config.toml`:

@@ -37,6 +37,8 @@ ops=(
     '--migrate-config:append new default config sections'
     '--serve:serve the JSON HTTP API (--host, --port)'
     '--refresh-on-demand:let qBittorrent poll on-demand endpoint feeds'
+    '--play:open the next episode of a show in your player'
+    '--status:what is downloading now and what finished lately'
     '--setup:walk through qBittorrent, folders and endpoints'
     '--doctor:check the whole setup and say how to fix it'
     '--add-repo:trust an endpoint repo by its URL'
@@ -126,6 +128,16 @@ case $words[op] in
         ;;
     (--doctor)
         compadd -- --no-search
+        ;;
+    (--play)
+        local -a shows
+        shows=("${(@f)$(anirss --_shows 2>/dev/null)}")
+        _alternative \
+            'shows:show:compadd -a shows' \
+            'flags:flag:((--pick\:"choose the episode"))'
+        ;;
+    (--status)
+        compadd -- --days=1 --days=7 --days=30
         ;;
     (--add-repo|--add-endpoint)
         _message -r 'the address (URL) to add'

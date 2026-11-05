@@ -41,6 +41,15 @@ Getting started:
     anirss --doctor [--no-search] Check the whole setup; says how to fix each
                                   problem. --no-search skips the test searches.
 
+Watching (your own player):
+    anirss --play [show]          Open the show's next episode: the one after the
+                                  last one anirss played, or the first. No show:
+                                  pick one. Player: [player] command, else mpv,
+                                  VLC, ... or the system's video opener.
+    anirss --play <show> --pick   Choose the episode (✓ played, ▶ next).
+    anirss --status [--days=N]    What is downloading now, and what finished in
+                                  the last N days (7).
+
 Endpoints (anirss ships with none; add them from a repo or by hand):
     anirss --add-repo <url>       Trust an endpoint repo: checks its signature,
                                   shows its key, asks first. (AniBeam's repos work.)
@@ -81,7 +90,8 @@ Backend (for frontends and other apps; see docs/agents/):
 
 Config: ~/.config/anirss/config.toml (auto-created on first run).
 State:  ~/.local/state/anirss/   (feeds.txt cache, qbt.sid session cookie, anirss.log,
-                                  repos.json; a named client's session is qbt-<name>.sid)
+                                  repos.json, played.json; a named client's session
+                                  is qbt-<name>.sid)
 """
 
 __version__ = "0.6.1"

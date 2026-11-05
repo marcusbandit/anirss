@@ -17,7 +17,7 @@ _anirss() {
     _init_completion -n : || return
     cache="${XDG_STATE_HOME:-$HOME/.local/state}/anirss/feeds.txt"
 
-    local ops="-c --client -e --endpoint -Q -Qj -S -Sh -Sy -R -Rs -Rn -Rns -Rh -Rsh -Rnh -Rnsh -T -Th --noconfirm --no-seed --config --migrate-config --refresh-on-demand --serve --setup --doctor --add-repo --repos --remove-repo --install --update-endpoints --endpoints --add-endpoint --remove-endpoint --version -h --help"
+    local ops="-c --client -e --endpoint -Q -Qj -S -Sh -Sy -R -Rs -Rn -Rns -Rh -Rsh -Rnh -Rnsh -T -Th --noconfirm --no-seed --config --migrate-config --refresh-on-demand --serve --play --status --setup --doctor --add-repo --repos --remove-repo --install --update-endpoints --endpoints --add-endpoint --remove-endpoint --version -h --help"
 
     if [[ $prev == -e || $prev == --endpoint ]]; then
         local IFS=$'\n'
@@ -59,6 +59,12 @@ _anirss() {
             ;;
         --doctor)
             COMPREPLY=( $(compgen -W "--no-search" -- "$cur") )
+            ;;
+        --play)
+            _anirss_lines < <(anirss --_shows 2>/dev/null; echo --pick)
+            ;;
+        --status)
+            COMPREPLY=( $(compgen -W "--days=1 --days=7 --days=30" -- "$cur") )
             ;;
         --remove-endpoint)
             local IFS=$'\n'
