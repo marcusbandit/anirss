@@ -169,3 +169,14 @@ def show_titles(items: list[Item], cap: int | None = None,
         more = len(items) - shown
         print(f"  {C_DIM}... and {more} more "
               f"({C_OFF}{C_YEL}use [show all] in the picker{C_OFF}{C_DIM}){C_OFF}")
+
+
+def short_home(text: str) -> str:
+    """`text` with the home directory written as ~, for paths people read."""
+    import os
+    home = os.path.expanduser("~").rstrip("/\\")
+    if not home or home in ("/", "\\"):
+        return text
+    if text == home:
+        return "~"
+    return text.replace(home + os.sep, "~" + os.sep)

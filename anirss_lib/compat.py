@@ -88,6 +88,35 @@ def detached_flags() -> dict:
     return {"start_new_session": True}
 
 
+def install_hint(package: str = "fzf") -> str:
+    """The command that installs `package` on this system, for a message."""
+    import platform
+    if sys.platform == "darwin":
+        return f"brew install {package}"
+    if IS_WINDOWS:
+        return f"winget install {package}"
+    ids = ""
+    try:
+        with open("/etc/os-release", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith(("ID=", "ID_LIKE=")):
+                    ids += " " + line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    words = ids.split()
+    for names, cmd in ((("arch", "manjaro", "endeavouros", "cachyos"), "sudo pacman -S"),
+                       (("debian", "ubuntu", "linuxmint", "pop"), "sudo apt install"),
+                       (("fedora", "rhel", "centos"), "sudo dnf install"),
+                       (("opensuse", "suse", "opensuse-tumbleweed"), "sudo zypper install"),
+                       (("alpine",), "sudo apk add"),
+                       (("nixos",), "nix-env -iA nixpkgs.")):
+        if any(n in words for n in names):
+            return f"{cmd}{'' if cmd.endswith('.') else ' '}{package}"
+    if platform.system() == "FreeBSD":
+        return f"sudo pkg install {package}"
+    return f"install {package} with your package manager"
+
+
 def utf8_stdio() -> None:
     """Windows opens piped stdio in the ANSI code page, which cannot print
     every release title. Switch it to UTF-8 and never raise on a character."""

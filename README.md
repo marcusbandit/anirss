@@ -42,7 +42,21 @@ cd anirss
 
 `./install.sh` is idempotent - re-run it any time to pull, refresh the binary, and append any new default config sections. (No separate update script.)
 
-After the first install, edit `~/.config/anirss/config.toml` to point at your qBittorrent WebUI.
+## Getting started
+
+Run `anirss`. The first time, with nothing set up yet, it opens a short setup:
+
+1. **qBittorrent.** anirss drives qBittorrent through its Web UI. Setup looks for one on this machine; if there is none it shows where to turn it on (Tools › Options › Web UI › "Web User Interface (Remote control)"), or takes the address of one on another machine. It logs in on the spot and offers to remember the password.
+2. **Where downloads go.** Each show gets its own folder under one place (`~/Downloads/Anime/<show>/` by default), movies another. Point your player or media server at it.
+3. **Search endpoints.** anirss ships with none. Paste the URL of an endpoint repo, check its key, and install what you want (see [Endpoints](#endpoints)).
+
+Every step can be skipped and done later with `anirss --setup`. Setup writes only the keys it asked about into `~/.config/anirss/config.toml`.
+
+`anirss --doctor` checks the whole setup at any time and says how to fix each problem: qBittorrent answers, the login works, RSS is on, each endpoint answers a test search, repos verify and have no pending updates, fzf is installed.
+
+A stock qBittorrent ships with RSS fetching and RSS auto-download turned off, and a subscription does nothing without them. anirss turns both on the first time you subscribe, and says so.
+
+The interactive search needs [fzf](https://github.com/junegunn/fzf). Without it, anirss says how to install it on your system; `--subscribe`, `--download N`, `--download-all` and `--movie` work without it.
 
 ## Endpoints
 

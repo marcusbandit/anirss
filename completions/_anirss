@@ -37,6 +37,8 @@ ops=(
     '--migrate-config:append new default config sections'
     '--serve:serve the JSON HTTP API (--host, --port)'
     '--refresh-on-demand:let qBittorrent poll on-demand endpoint feeds'
+    '--setup:walk through qBittorrent, folders and endpoints'
+    '--doctor:check the whole setup and say how to fix it'
     '--add-repo:trust an endpoint repo by its URL'
     '--repos:check repos for updates and list what they offer'
     '--remove-repo:stop trusting an endpoint repo'
@@ -121,6 +123,9 @@ case $words[op] in
         local -a rs
         rs=("${(@f)$(anirss --_repos 2>/dev/null)}")
         _wanted repos expl 'repo' compadd -a rs
+        ;;
+    (--doctor)
+        compadd -- --no-search
         ;;
     (--add-repo|--add-endpoint)
         _message -r 'the address (URL) to add'

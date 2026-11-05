@@ -239,6 +239,13 @@ Subscribing and downloading (these need qBittorrent):
 | `subscription_spec(query, items, endpoint=None)` | `SubscriptionSpec` | What `subscribe` would register. Does not touch qBittorrent (an Erai endpoint may cost one probe request). |
 | `subscribe(query, *, endpoint=None, items=None, name=None, hidden=False, client=None)` | `SubscribeResult` | `items` are fetched (no fallback) if omitted; `NotFoundError` if there are none. `name` defaults to the show name parsed from the first item. |
 | `subscribe_feed(url, *, name=None, hidden=False, client=None)` | `SubscribeResult` | Subscribe to a raw RSS URL as is. |
+
+Both subscribe calls take `enable_rss=True`: they turn on qBittorrent's RSS
+fetching and RSS auto-download first when they are off (a stock qBittorrent
+ships with both off, and a subscription does nothing without them), and
+`turned_on` says which. These are qBittorrent-wide, so RSS rules of the user's
+own act on them too; ask before subscribing when that matters, and pass
+`enable_rss=False` to leave them, which reports them in `rss_off` instead.
 | `download(links, *, name, hidden=False, client=None)` | `AddResult` | `magnet:` or http(s) links only. Saves under `<save_base>/<name>`. |
 | `download_items(items, *, name=None, hidden=False, client=None)` | `AddResult` | `download()` for search results. |
 | `movie(link, *, client=None)` | `AddResult` | One link into `[downloads].movie_path`, no subdirectory. |
@@ -258,6 +265,7 @@ Managing:
 | `client(name=None)` | `dict` | One of those. `NotFoundError` for an unknown name. |
 | `qbt_status(client=None)` | `dict` | Never logs in. See [GET /qbt/status](#get-qbtstatus). |
 | `set_qbt_password(password, *, client=None)` | `None` | Swap a client's credentials and clear its login failure. |
+| `doctor(*, search=True, refresh=True, fzf=False)` | `list[doctor.Check]` | Checks the setup: each client (answers, is qBittorrent, login, version, RSS preferences), the endpoints (one test search each with `search`), the repos (fetched again with `refresh`), the download folders. Never raises for what it finds, never prompts, never changes anything. See [GET /doctor](#get-doctor). |
 
 `hidden=True` switches the base directory from `[downloads].save_base` to
 `[downloads].hidden_base`. `name` is validated; a name containing path
@@ -510,6 +518,7 @@ Summary:
 | GET | `/endpoints` | Configured search endpoints. |
 | POST | `/endpoints` | Add an endpoint, or replace the one with its name. |
 | DELETE | `/endpoints/{name}` | Remove an endpoint. |
+| GET | `/doctor` | Check the whole setup. |
 | GET | `/repos` | Trusted endpoint repos (`?refresh=1` checks them again). |
 | POST | `/repos` | Fetch and verify a repo, without trusting it. |
 | POST | `/repos/trust` | Trust a repo, pinning the key the user saw. |
@@ -542,7 +551,7 @@ No auth. The Host guard still applies.
 curl $BASE/health
 ```
 ```json
-{"ok": true, "version": "0.7.0", "features": ["qbt_clients", "qbt_env_session", "endpoint_writes", "endpoint_repos"]}
+{"ok": true, "version": "0.7.0", "features": ["qbt_clients", "qbt_env_session", "endpoint_writes", "endpoint_repos", "doctor", "rss_autoenable"]}
 ```
 
 `features` names what this anirss can do. Check for the one you rely on rather
@@ -554,6 +563,8 @@ has no `features` at all). A name keeps its meaning once listed.
 | --- | --- | --- |
 | `qbt_clients` | 0.5.0 | Several qBittorrents in `[[qbittorrent.client]]` blocks, [GET /clients](#get-clients), and `client` on every route that reaches qBittorrent. |
 | `endpoint_writes` | 0.6.0 | [POST /endpoints](#post-endpoints) and [DELETE /endpoints/{name}](#delete-endpointsname), and a fresh config with no endpoints (`409 no_endpoints` until one is added). |
+| `doctor` | 0.7.0 | [GET /doctor](#get-doctor). |
+| `rss_autoenable` | 0.7.0 | Subscribing turns on qBittorrent's RSS fetching and auto-download when they are off, and `SubscribeResult.turned_on` says so. |
 | `endpoint_repos` | 0.7.0 | The [`/repos` routes](#endpoint-repos-routes): signed endpoint repos in AniBeam's format, installed into `config.toml`. |
 | `qbt_env_session` | 0.5.0 | An `ANIRSS_QBT_URL` that the config does not name keeps its own session and saved password, so an app that points anirss at another qBittorrent never sends it the configured one's. An anirss without it fails at nothing, it only misbehaves quietly, so an app that sets `ANIRSS_QBT_URL` should refuse one that does not list it. |
 
@@ -650,6 +661,29 @@ previous file as `config.toml.bak`.
 
 `404 not_found` for an unknown name. Subscriptions on the endpoint keep running
 in qBittorrent.
+
+#### GET /doctor
+
+Checks everything a working setup needs, for a frontend's setup or status
+screen. Query parameters: `search` (default on: one test search per endpoint)
+and `refresh` (default on: fetch each repo again); both reach the network, so
+turn them off for a quick look.
+
+```json
+{"ok": false,
+ "checks": [
+   {"id": "qbt:default", "title": "qBittorrent", "status": "ok",
+    "detail": "answers at http://localhost:8080", "fix": ""},
+   {"id": "qbt_rss:default", "title": "RSS", "status": "warn",
+    "detail": "RSS feed fetching and RSS auto-download are off, so a subscription downloads nothing",
+    "fix": "anirss turns them on with your next subscription; or in qBittorrent: ..."},
+   {"id": "endpoints", "title": "endpoints", "status": "fail",
+    "detail": "none configured, so there is nothing to search", "fix": "..."}]}
+```
+
+`ok` is false when any check failed. Branch on `id` and `status`; `detail` and
+`fix` are for people. It never logs in with anything but the saved or given
+password, never starts qBittorrent, and changes nothing.
 
 #### Endpoint repos routes
 
@@ -866,6 +900,9 @@ feed is fetched to check it has items and to derive a default name.
 
 `name` defaults to the show name parsed from the first item. `hidden: true`
 saves under `[downloads].hidden_base` instead of `save_base`.
+`enable_rss` (default `true`) turns qBittorrent's RSS fetching and
+auto-download on when they are off and lists them in `turned_on`; `false`
+leaves them and lists them in `rss_off`. They are qBittorrent-wide settings.
 
 ```
 curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
@@ -1106,7 +1143,8 @@ keep their order (`groups[].members` are indexes).
 | `Endpoint` (Python) | `name`, `kind` (`"nyaa"` or `"rss"`), `url`, `category`, `filter` (unredacted `url`) |
 | endpoint info (HTTP `/endpoints`, Python `endpoint_info`) | `name`, `kind`, `url` (redacted), `client_side_refine` |
 | `SubscriptionSpec` | `feed_url`, `must_contain`, `must_not_contain`, `endpoint_name` |
-| `SubscribeResult` | `name`, `feed_url`, `save_path`, `must_contain`, `must_not_contain`, `tags` |
+| `SubscribeResult` | `name`, `feed_url`, `save_path`, `must_contain`, `must_not_contain`, `tags`, `turned_on` (qBittorrent preferences the subscription turned on: `rss_processing_enabled`, `rss_auto_downloading_enabled`; empty when they were on), `rss_off` (the ones still off, with `enable_rss` false) |
+| `doctor.Check` | `id` (stable: `qbt:<client>`, `qbt_login:<client>`, `qbt_rss:<client>`, `endpoints`, `endpoint:<name>`, `repo:<url>`, `downloads:<key>`, ...), `title`, `status` (`ok`, `warn`, `fail`, `skip`), `detail`, `fix` |
 | `AddResult` | `count`, `save_path`, `tags`, `hashes` |
 | `RuleInfo` | `name`, `feed_url`, `save_path`, `rule_enabled`, `torrent_count`, `file_count` |
 | `RemovePlan` | `name`, `feed_url`, `feed_path`, `save_path`, `torrents`, `size_bytes`, `torrent_count_in_qb` |

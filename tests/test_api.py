@@ -93,6 +93,9 @@ class FakeQbt:
         self.posts: list[tuple[str, dict]] = []
         self.multiparts: list[tuple[str, dict]] = []
         self.gets: list[tuple[str, dict]] = []
+        # A qBittorrent whose RSS fetching and auto-download are on already.
+        self.prefs = {"rss_processing_enabled": True,
+                      "rss_auto_downloading_enabled": True}
 
     def _maybe_fail(self):
         if self.auth_failures > 0:
@@ -108,6 +111,8 @@ class FakeQbt:
             return self.feed_tree
         if endpoint == "/api/v2/torrents/info":
             return self.torrents
+        if endpoint == "/api/v2/app/preferences":
+            return self.prefs
         raise AssertionError(f"unexpected GET {endpoint}")
 
     def post(self, endpoint, **fields):
@@ -1913,3 +1918,13 @@ def test_adding_to_a_legacy_config_keeps_its_endpoint(tmp_path):
     ani.add_endpoint(dict(RSS1_EP))
     assert [e.name for e in ani.endpoints()] == ["nyaa", "rss1"]
     assert [e.name for e in Anirss(config_path=path).endpoints()] == ["nyaa", "rss1"]
+
+
+def test_subscribe_on_a_fresh_qbittorrent_turns_rss_on_and_says_so(make, monkeypatch):
+    qbt = FakeQbt()
+    qbt.prefs = {"rss_processing_enabled": False, "rss_auto_downloading_enabled": True}
+    e = make(qbt)
+    monkeypatch.setattr(api_mod, "fetch_rss", lambda url: _frieren(1))
+    res = e.ani.subscribe_feed("https://feed.example/rss", name="Show")
+    assert res.turned_on == ["rss_processing_enabled"]
+    assert qbt.posts[0][0] == "/api/v2/app/setPreferences"

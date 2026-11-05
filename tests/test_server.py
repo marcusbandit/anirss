@@ -71,7 +71,7 @@ class FakeQbt:
         self.multiparts = []
         self.get_calls = []
         self.gets = {"/api/v2/rss/rules": {}, "/api/v2/rss/items": {},
-                     "/api/v2/torrents/info": []}
+                     "/api/v2/torrents/info": [], "/api/v2/app/preferences": {}}
 
     def post(self, endpoint, **fields):
         self.posts.append((endpoint, fields))
@@ -167,7 +167,7 @@ def test_health_needs_no_token(env):
     assert status == 200
     assert body["ok"] is True and body["version"] == env.ani.version
     assert body["features"] == ["qbt_clients", "qbt_env_session", "endpoint_writes",
-                                "endpoint_repos"]
+                                "endpoint_repos", "doctor", "rss_autoenable"]
 
 
 @pytest.mark.parametrize("token", [None, "wrong", "to", "tokk"])

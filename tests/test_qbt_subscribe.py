@@ -109,3 +109,50 @@ def test_do_subscribe_without_tags_keeps_legacy_rule_shape():
     rule = _rule_from(qbt)
     assert "torrentParams" not in rule
     assert rule["savePath"] == "/tmp/save/Show"
+
+
+class PrefsQbt(RecordingQbt):
+    """A qBittorrent whose preferences say what a fresh install says."""
+
+    def __init__(self, prefs):
+        super().__init__()
+        self.prefs = prefs
+
+    def get_json(self, path):
+        return self.prefs if path == "/api/v2/app/preferences" else {}
+
+
+def test_subscribing_turns_on_rss_fetching_and_auto_download_when_off():
+    qbt = PrefsQbt({"rss_processing_enabled": False,
+                    "rss_auto_downloading_enabled": False})
+    res = actions.subscribe_rule(qbt, "https://f.example/rss", "Show", "/dl")
+    assert res.turned_on == ["rss_processing_enabled", "rss_auto_downloading_enabled"]
+    (endpoint, fields), *_ = qbt.posts
+    assert endpoint == "/api/v2/app/setPreferences"
+    assert json.loads(fields["json"]) == {"rss_processing_enabled": True,
+                                          "rss_auto_downloading_enabled": True}
+
+
+def test_subscribing_leaves_rss_preferences_alone_when_on_or_unknown():
+    for prefs in ({"rss_processing_enabled": True,
+                   "rss_auto_downloading_enabled": True}, {}, None):
+        qbt = PrefsQbt(prefs)
+        res = actions.subscribe_rule(qbt, "https://f.example/rss", "Show", "/dl")
+        assert res.turned_on == []
+        assert all(e != "/api/v2/app/setPreferences" for e, _ in qbt.posts)
+
+
+def test_a_subscription_may_leave_rss_off_and_says_it_is_off():
+    qbt = PrefsQbt({"rss_processing_enabled": True,
+                    "rss_auto_downloading_enabled": False})
+    res = actions.subscribe_rule(qbt, "https://f.example/rss", "Show", "/dl",
+                                 enable_rss=False)
+    assert res.turned_on == [] and res.rss_off == ["rss_auto_downloading_enabled"]
+    assert all(e != "/api/v2/app/setPreferences" for e, _ in qbt.posts)
+
+
+def test_unreadable_rss_settings_are_unknown_not_on():
+    assert actions.rss_prefs_off(PrefsQbt(None)) is None
+    assert actions.rss_prefs_off(PrefsQbt({"locale": "en"})) is None
+    assert actions.rss_prefs_off(PrefsQbt({"rss_processing_enabled": True,
+                                           "rss_auto_downloading_enabled": True})) == []

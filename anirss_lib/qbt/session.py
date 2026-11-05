@@ -1,6 +1,7 @@
 """qBittorrent WebUI session + SID cookie persistence."""
 
 import getpass
+import http.client
 import http.cookiejar
 import json
 import re
@@ -337,15 +338,28 @@ def _qbt_reachable(base_url: str, timeout: float = 3.0) -> bool:
     """True if something answers HTTP at base_url. Any HTTP status counts as
     reachable (even 401/403 means the WebUI is up); only a connection failure
     or timeout is a miss."""
-    req = urllib.request.Request(f"{base_url}/api/v2/app/version")
+    return qbt_answer(base_url, timeout) is not None
+
+
+def qbt_answer(base_url: str, timeout: float = 3.0) -> str | None:
+    """What answers at base_url: "qbt" when it looks like qBittorrent's Web
+    UI (its version route says a version, or refuses with qBittorrent's own
+    plain "Forbidden" before a login), "other" for any other server, None
+    when nothing answers."""
+    req = urllib.request.Request(f"{base_url.rstrip('/')}/api/v2/app/version")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            resp.read()
-        return True
-    except urllib.error.HTTPError:
-        return True
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return False
+            body = resp.read(64).decode("utf-8", "replace").strip()
+        return "qbt" if re.fullmatch(r"v?\d+(\.\d+)+\S*", body) else "other"
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(64).decode("utf-8", "replace").strip()
+        except (OSError, http.client.HTTPException):
+            body = ""
+        return "qbt" if e.code == 403 and body == "Forbidden" else "other"
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError,
+            http.client.HTTPException):
+        return None
 
 
 def _is_local_url(base_url: str) -> bool:

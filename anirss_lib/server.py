@@ -356,6 +356,7 @@ class Handler(BaseHTTPRequestHandler):
             "/repos/endpoints": {"GET": self.h_repo_endpoints},
             "/repos/install": {"POST": self.h_repo_install},
             "/repos/update": {"POST": self.h_repo_update},
+            "/doctor": {"GET": self.h_doctor},
         }
         if route in table:
             fn = table[route].get(method)
@@ -395,6 +396,12 @@ class Handler(BaseHTTPRequestHandler):
     def h_endpoint_remove(self, q, name):
         self.ani.remove_endpoint(name)
         return 200, {"removed": name}
+
+    def h_doctor(self, q, _):
+        checks = self.ani.doctor(search=_bool(q.get("search"), True),
+                                 refresh=_bool(q.get("refresh"), True))
+        return 200, {"ok": not any(c.status == "fail" for c in checks),
+                     "checks": to_jsonable(checks)}
 
     def h_repos(self, q, _):
         repos = self.ani.repos(refresh=_bool(q.get("refresh")))
@@ -484,15 +491,17 @@ class Handler(BaseHTTPRequestHandler):
         hidden = _bool(b.get("hidden"))
         client = _str(b, "client")
         feed_url = _str(b, "feed_url")
+        enable_rss = _bool(b.get("enable_rss"), True)
         if feed_url:
             res = self.ani.subscribe_feed(feed_url, name=_str(b, "name"),
-                                          hidden=hidden, client=client)
+                                          hidden=hidden, client=client,
+                                          enable_rss=enable_rss)
         else:
             res = self.ani.subscribe(_str(b, "query", required=True) or "",
                                      endpoint=_str(b, "endpoint"),
                                      items=_items(b, required=False),
                                      name=_str(b, "name"), hidden=hidden,
-                                     client=client)
+                                     client=client, enable_rss=enable_rss)
         return 201, to_jsonable(res)
 
     def h_subscribe_preview(self, q, _):
