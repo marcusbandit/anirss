@@ -1,6 +1,6 @@
 pkgbase = anirss
 	pkgdesc = Search the endpoints you add and hand releases to qBittorrent
-	pkgver = 0.7.0
+	pkgver = 0.7.1
 	pkgrel = 1
 	url = https://github.com/marcusbandit/anirss
 	arch = any
@@ -8,7 +8,7 @@ pkgbase = anirss
 	depends = python
 	depends = fzf
 	depends = python-setproctitle
-	source = anirss-0.7.0.tar.gz::https://github.com/marcusbandit/anirss/archive/refs/tags/v0.7.0.tar.gz
-	sha256sums = 1fd2030a963bc6e5c1a6e5491fdbc3d78e11f6f17f1f056bb016b72d5fa8bd03
+	source = anirss-0.7.1.tar.gz::https://github.com/marcusbandit/anirss/archive/refs/tags/v0.7.1.tar.gz
+	sha256sums = ffa15a2292fa70e134387bd55fadb1188cbcc1baa406d1a8920a6faf6899f6a8
 
 pkgname = anirss
