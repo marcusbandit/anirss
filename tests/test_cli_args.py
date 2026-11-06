@@ -149,3 +149,55 @@ def test_endpoint_flag_missing_value_dies(monkeypatch):
     monkeypatch.setattr(a, "die", fake_die)
     with pytest.raises(SystemExit):
         a.parse_cli_args(["-e"])
+
+
+def _capture_die(monkeypatch):
+    captured = {}
+    def fake_die(msg):
+        captured["msg"] = msg
+        raise SystemExit(1)
+    monkeypatch.setattr(a, "die", fake_die)
+    return captured
+
+
+@pytest.mark.parametrize("flag", ["-v", "-x", "-dub"])
+def test_parse_rejects_leading_unknown_short_flag(monkeypatch, flag):
+    """`anirss -v` used to search nyaa for "-v". A leading single-dash token
+    that is no op flag is a typo, so it errors."""
+    captured = _capture_die(monkeypatch)
+    with pytest.raises(SystemExit):
+        a.parse_cli_args([flag])
+    assert flag in captured["msg"]
+
+
+def test_parse_keeps_op_flags_in_positional():
+    p = a.parse_cli_args(["-Rn", "Frieren"])
+    assert p.positional == ["-Rn", "Frieren"]
+
+
+def test_parse_double_dash_passes_everything_through():
+    p = a.parse_cli_args(["--", "-v", "--help"])
+    assert p.positional == ["-v", "--help"]
+    assert p.literal_query
+
+
+def test_parse_double_dash_after_query_is_not_literal_start():
+    p = a.parse_cli_args(["-Rn", "--", "-weird-name"])
+    assert p.positional == ["-Rn", "-weird-name"]
+    assert not p.literal_query
+
+
+@pytest.mark.parametrize("argv", [
+    ["Frieren", "-dub"], ["-dub", "Frieren"],
+    ["--subscribe", "-dub", "Frieren"], ["-e", "nyaa", "-dub", "Frieren"],
+])
+def test_parse_exclude_terms_next_to_a_word_still_work(argv):
+    p = a.parse_cli_args(argv)
+    assert "Frieren" in p.positional and "-dub" in p.positional
+
+
+def test_parse_rejects_only_dash_words_after_long_flag(monkeypatch):
+    captured = _capture_die(monkeypatch)
+    with pytest.raises(SystemExit):
+        a.parse_cli_args(["--subscribe", "-v"])
+    assert "-v" in captured["msg"]

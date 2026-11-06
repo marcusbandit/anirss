@@ -3,6 +3,7 @@
 Usage:
     anirss                        Prompt for a search.
     anirss [search query]         Search, refine, choose subscribe/download/movie.
+    anirss -- <query>             Search for text that looks like a flag.
     anirss <nyaa-style-url>       Extract `q=` from the URL and run as a fresh search.
     anirss <magnet|*.torrent>     Download a single torrent now.
                                   (magnet URI, remote *.torrent URL, or local *.torrent path)
