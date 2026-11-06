@@ -36,7 +36,7 @@ trap cleanup EXIT
 # --- per-package publish ----------------------------------------------------
 publish_one() {
     local name="$1"
-    local src_dir="$HERE/$name"
+    local src_dir="${2:-$HERE/$name}"
 
     [[ -f "$src_dir/PKGBUILD" ]] || { echo "missing $src_dir/PKGBUILD" >&2; exit 1; }
     [[ -f "$src_dir/.SRCINFO" ]] || { echo "missing $src_dir/.SRCINFO (run 'makepkg --printsrcinfo > .SRCINFO' in $src_dir)" >&2; exit 1; }
@@ -58,6 +58,17 @@ publish_one() {
     local pkgver
     pkgver="$(awk -F= '/^pkgver=/{print $2}' "$src_dir/PKGBUILD")"
 
+    # A VCS package's pkgver moves with every commit on main. Push it only when something
+    # a user resolves against changed: the PKGBUILD beyond pkgver, or the provided version
+    # (the tag), so subscribers are not notified for a bare pkgver bump.
+    if [[ "$name" == *-git && -n "$(git -C "$repo" log --oneline 2>/dev/null)" ]] \
+        && diff -q <(grep -v '^pkgver=' "$repo/PKGBUILD") <(grep -v '^pkgver=' "$src_dir/PKGBUILD") >/dev/null \
+        && [[ "$(grep 'provides =' "$repo/.SRCINFO")" == "$(grep 'provides =' "$src_dir/.SRCINFO")" ]]; then
+        echo "==> $name: only pkgver moved; nothing to push"
+        git -C "$repo" checkout -q -- PKGBUILD .SRCINFO
+        return 0
+    fi
+
     if git -C "$repo" diff --quiet && git -C "$repo" diff --cached --quiet; then
         if [[ -z "$(git -C "$repo" log --oneline 2>/dev/null)" ]]; then
             # Brand-new AUR repo: nothing committed yet, ship the initial state.
@@ -76,8 +87,24 @@ publish_one() {
     echo "==> $name: pushed"
 }
 
+# anirss-git's provide carries its pkgver (anirss=0.8.0 out of 0.8.0.r3.gabc1234), and AUR
+# helpers read it from .SRCINFO before they build anything, so the .SRCINFO has to name the
+# tag main is at. `makepkg -od` clones the PKGBUILD's own source (main on GitHub) and runs its
+# pkgver(), in a scratch copy, so neither this checkout's HEAD nor its tracked files count.
+# Done before anything is pushed: a failure here leaves both packages as they were.
+GIT_STAGE="$(mktemp -d -t anirss-git-stage-XXXX)"
+trap 'cleanup; rm -rf "$GIT_STAGE"' EXIT
+prepare_git() {
+    cp "$HERE/anirss-git/PKGBUILD" "$GIT_STAGE/PKGBUILD"
+    (cd "$GIT_STAGE" && makepkg -od --noprepare >/dev/null && makepkg --printsrcinfo > .SRCINFO.new) \
+        || { echo "anirss-git: could not work out the version of main" >&2; exit 1; }
+    mv "$GIT_STAGE/.SRCINFO.new" "$GIT_STAGE/.SRCINFO"
+    echo "==> anirss-git: $(grep -m1 'pkgver =' "$GIT_STAGE/.SRCINFO" | xargs), $(grep -m1 'provides =' "$GIT_STAGE/.SRCINFO" | xargs)"
+}
+
+prepare_git
 publish_one anirss
-publish_one anirss-git
+publish_one anirss-git "$GIT_STAGE"
 
 echo
 echo "Done. View at:"

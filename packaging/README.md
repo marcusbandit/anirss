@@ -41,7 +41,7 @@ Use that hash to replace the `REPLACE_ME_AFTER_PUSHING_TAG` placeholder in:
 - `packaging/brew/anirss.rb` — `sha256 "..."`
 - `packaging/aur/anirss/PKGBUILD` — `sha256sums=('...')`
 
-(`anirss-git/PKGBUILD` uses `'SKIP'` and never needs updating.)
+(`anirss-git/PKGBUILD` uses `'SKIP'`; its version comes from `pkgver()`, see Updating on a new release.)
 
 ---
 
@@ -181,8 +181,12 @@ yay -S anirss-git
 
 - `anirss`: bump `pkgver`, reset `pkgrel=1`, refresh `sha256sums`,
   regenerate `.SRCINFO`, commit, push.
-- `anirss-git`: nothing to do — `pkgver()` recomputes on every build.
-  Only push if you change `depends`, `package()`, etc.
+- `anirss-git`: push after each new tag. Its `provides` carries the tag
+  (`anirss=0.8.0`) so it meets a versioned dependency such as AniBeam's
+  `anirss>=0.6.0`, and AUR helpers read that from `.SRCINFO` before they
+  build. `publish.sh` runs the PKGBUILD's own `pkgver()` against main with
+  `makepkg -od` in a scratch copy and pushes only when the provided tag or the
+  PKGBUILD itself changed, never for a bare pkgver bump.
 
 ### Linting
 

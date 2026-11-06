@@ -1,7 +1,7 @@
 # Maintainer: Marcus Bandit <marcusbanditten@gmail.com>
 pkgname=anirss-git
 _pkgname=anirss
-pkgver=0.0.0.r0.0000000
+pkgver=0.8.0.r0.g0000000
 pkgrel=1
 pkgdesc="Search the endpoints you add and hand releases to qBittorrent (git main)"
 arch=('any')
@@ -9,7 +9,10 @@ url="https://github.com/marcusbandit/anirss"
 license=('GPL-3.0-or-later')
 depends=('python' 'fzf' 'python-setproctitle')
 makedepends=('git')
-provides=("$_pkgname")
+# Versioned, or pacman never lets it satisfy a dependency such as anibeam's anirss>=0.6.0.
+# makepkg sources this file again after pkgver(), so the provide carries the built tag:
+# 0.8.0 out of 0.8.0.r3.gabc1234, 0.9.0.rc1 out of 0.9.0.rc1.r0.gabc1234.
+provides=("$_pkgname=${pkgver%.r*.g*}")
 conflicts=("$_pkgname")
 source=("$_pkgname::git+https://github.com/marcusbandit/anirss.git")
 sha256sums=('SKIP')
@@ -17,11 +20,14 @@ sha256sums=('SKIP')
 pkgver() {
     cd "$_pkgname"
     # Prefer the latest tag; fall back to a commit-count form on a fresh repo.
-    git describe --long --tags --abbrev=7 2>/dev/null \
-        | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' \
-        || printf "0.0.0.r%s.%s" \
+    local desc
+    if desc="$(git describe --long --tags --abbrev=7 2>/dev/null)"; then
+        sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g' <<<"$desc"
+    else
+        printf "0.0.0.r%s.%s" \
             "$(git rev-list --count HEAD)" \
             "$(git rev-parse --short=7 HEAD)"
+    fi
 }
 
 package() {
