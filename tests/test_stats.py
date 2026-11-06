@@ -82,11 +82,11 @@ def test_parse_http_scrape_reads_all_files():
     }
 
 
-def test_http_scrape_replaces_announce_with_scrape(monkeypatch):
-    captured = {}
+def _capture_urlopen(monkeypatch):
+    captured = []
 
     def fake_urlopen(req, timeout=0):
-        captured["url"] = req.full_url
+        captured.append(req.full_url)
         class R:
             def __enter__(self):
                 return self
@@ -98,11 +98,77 @@ def test_http_scrape_replaces_announce_with_scrape(monkeypatch):
         return R()
 
     monkeypatch.setattr(stats.urllib.request, "urlopen", fake_urlopen)
+    return captured
+
+
+def test_http_scrape_replaces_announce_with_scrape(monkeypatch):
+    captured = _capture_urlopen(monkeypatch)
     out = stats._http_scrape("http://nyaa.tracker.wf:7777/announce",
                              [b"\x01" * 20])
-    assert captured["url"].startswith("http://nyaa.tracker.wf:7777/scrape?")
-    assert "info_hash=" in captured["url"]
+    assert captured[0].startswith("http://nyaa.tracker.wf:7777/scrape?")
+    assert "info_hash=" in captured[0]
     assert out[b"\x01" * 20] == (5, 1, 9)
+
+
+def test_http_scrape_turns_announce_php_into_scrape_php_and_keeps_the_query(monkeypatch):
+    # BEP 48 only asks that the last path segment start with "announce" (#40).
+    captured = _capture_urlopen(monkeypatch)
+    out = stats._http_scrape("https://t.example/x/announce.php?passkey=abc",
+                             [b"\x01" * 20])
+    assert len(captured) == 1
+    assert captured[0].startswith(
+        "https://t.example/x/scrape.php?passkey=abc&info_hash=")
+    assert out[b"\x01" * 20] == (5, 1, 9)
+
+
+def test_http_scrape_keeps_the_query_of_a_plain_announce(monkeypatch):
+    captured = _capture_urlopen(monkeypatch)
+    stats._http_scrape("http://t.example/pk/announce?passkey=abc", [b"\x01" * 20])
+    assert captured[0].startswith("http://t.example/pk/scrape?passkey=abc&info_hash=")
+
+
+def test_http_scrape_keeps_the_query_on_every_batch(monkeypatch):
+    captured = _capture_urlopen(monkeypatch)
+    hashes = [bytes([n]) * 20 for n in range(stats.MAX_HTTP_BATCH + 5)]
+    stats._http_scrape("http://t.example/announce.php?passkey=abc&", hashes)
+    assert len(captured) == 2
+    for url in captured:
+        assert url.startswith("http://t.example/scrape.php?passkey=abc&info_hash=")
+        assert "&&" not in url
+
+
+def test_http_scrape_keeps_the_passkey_out_of_the_warning(monkeypatch):
+    lines = []
+    monkeypatch.setattr(stats, "log", lambda level, msg: lines.append(msg))
+
+    def failing_urlopen(req, timeout=0):
+        raise ValueError(f"cannot open {req.full_url}")
+
+    monkeypatch.setattr(stats.urllib.request, "urlopen", failing_urlopen)
+    assert stats._http_scrape(
+        "https://t.example/s3cretpk/announce.php?passkey=abc", [b"\x01" * 20]) == {}
+    assert len(lines) == 1
+    assert "t.example" in lines[0]
+    assert "s3cretpk" not in lines[0]
+    assert "abc" not in lines[0]
+
+
+def test_scrape_path_swaps_announce_at_the_start_of_the_last_segment():
+    for announce, scrape in [
+        ("/announce", "/scrape"),
+        ("/x/announce.php", "/x/scrape.php"),
+        ("/pk/announce", "/pk/scrape"),
+        ("/announce/x", None),
+        ("/my-announce", None),
+        ("/x/announce_v2", "/x/scrape_v2"),
+    ]:
+        assert stats._scrape_path(announce) == scrape, announce
+
+
+def test_http_scrape_skips_a_tracker_with_no_scrape_convention(monkeypatch):
+    captured = _capture_urlopen(monkeypatch)
+    assert stats._http_scrape("http://t.example/announce/x", [b"\x01" * 20]) == {}
+    assert captured == []
 
 
 def test_http_scrape_skips_non_http_trackers():
