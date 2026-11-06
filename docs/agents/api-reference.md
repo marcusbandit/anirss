@@ -566,7 +566,7 @@ has no `features` at all). A name keeps its meaning once listed.
 | `doctor` | 0.7.0 | [GET /doctor](#get-doctor). |
 | `rss_autoenable` | 0.7.0 | Subscribing turns on qBittorrent's RSS fetching and auto-download when they are off, and `SubscribeResult.turned_on` says so. |
 | `endpoint_repos` | 0.7.0 | The [`/repos` routes](#endpoint-repos-routes): signed endpoint repos in AniBeam's format, installed into `config.toml`. |
-| `subscription_save_path` | 0.8.0 | [POST /subscriptions](#post-subscriptions) takes `save_path`, so a subscription's rule saves into a folder of the app's choosing from the start. |
+| `subscription_save_path` | 0.7.1 | [POST /subscriptions](#post-subscriptions) takes `save_path`, so a subscription's rule saves into a folder of the app's choosing from the start. |
 | `qbt_env_session` | 0.5.0 | An `ANIRSS_QBT_URL` that the config does not name keeps its own session and saved password, so an app that points anirss at another qBittorrent never sends it the configured one's. An anirss without it fails at nothing, it only misbehaves quietly, so an app that sets `ANIRSS_QBT_URL` should refuse one that does not list it. |
 
 Every route that reaches qBittorrent (`/qbt/status`, `/subscriptions` and
