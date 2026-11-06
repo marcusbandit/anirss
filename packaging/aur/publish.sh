@@ -76,7 +76,20 @@ publish_one() {
     echo "==> $name: pushed"
 }
 
+# anirss-git's provide carries its pkgver (anirss=0.7.1 out of 0.7.1.r3.gabc1234), and AUR
+# helpers read it from .SRCINFO before they build anything, so the .SRCINFO has to name the
+# version main is at now, not the placeholder pkgver() would have replaced at build time.
+refresh_git_version() {
+    local dir="$HERE/anirss-git" ver
+    ver="$(git -C "$HERE/../.." describe --long --tags --abbrev=7 \
+        | sed 's/^v//;s/\([^-]*-g\)/r\1/;s/-/./g')"
+    sed -i "s/^pkgver=.*/pkgver=$ver/" "$dir/PKGBUILD"
+    (cd "$dir" && makepkg --printsrcinfo > .SRCINFO)
+    echo "==> anirss-git: pkgver $ver, $(grep -m1 'provides =' "$dir/.SRCINFO" | xargs)"
+}
+
 publish_one anirss
+refresh_git_version
 publish_one anirss-git
 
 echo

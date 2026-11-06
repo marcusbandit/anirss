@@ -1,7 +1,7 @@
 # Maintainer: Marcus Bandit <marcusbanditten@gmail.com>
 pkgname=anirss-git
 _pkgname=anirss
-pkgver=0.0.0.r0.0000000
+pkgver=0.7.1.r0.0000000
 pkgrel=1
 pkgdesc="Search the endpoints you add and hand releases to qBittorrent (git main)"
 arch=('any')
@@ -9,7 +9,9 @@ url="https://github.com/marcusbandit/anirss"
 license=('GPL-3.0-or-later')
 depends=('python' 'fzf' 'python-setproctitle')
 makedepends=('git')
-provides=("$_pkgname")
+# Versioned, or pacman never lets it satisfy a dependency such as anibeam's anirss>=0.6.0.
+# makepkg sources this file again after pkgver(), so the provide carries the built tag.
+provides=("$_pkgname=${pkgver%%.r*}")
 conflicts=("$_pkgname")
 source=("$_pkgname::git+https://github.com/marcusbandit/anirss.git")
 sha256sums=('SKIP')
