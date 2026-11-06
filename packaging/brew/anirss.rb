@@ -1,8 +1,8 @@
 class Anirss < Formula
   desc "Search the endpoints you add and hand releases to qBittorrent"
   homepage "https://github.com/marcusbandit/anirss"
-  url "https://github.com/marcusbandit/anirss/archive/refs/tags/v0.7.0.tar.gz"
-  sha256 "1fd2030a963bc6e5c1a6e5491fdbc3d78e11f6f17f1f056bb016b72d5fa8bd03"
+  url "https://github.com/marcusbandit/anirss/archive/refs/tags/v0.7.1.tar.gz"
+  sha256 "ffa15a2292fa70e134387bd55fadb1188cbcc1baa406d1a8920a6faf6899f6a8"
   license "GPL-3.0-or-later"
   head "https://github.com/marcusbandit/anirss.git", branch: "main"
 
